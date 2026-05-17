@@ -10,7 +10,7 @@ const MARKETS = [
   { id: "GOLD",     icon: "Au", base: 2341,   category: "Commodity", decimals: 2 },
   { id: "EUR/USD",  icon: "€",  base: 1.0823, category: "Forex",     decimals: 5 },
   { id: "COFFEE",   icon: "☕", base: 2.14,   category: "Commodity", decimals: 4 },
-  { id: "USD/RWF",  icon: "Fr", base: 1285,   category: "Forex",     decimals: 2 },
+  { id: "OIL/USD",  icon: "🛢", base: 82,     category: "Commodity", decimals: 2 },
 ];
 
 const NEWS_POOL = [
@@ -24,6 +24,10 @@ const NEWS_POOL = [
   { text: "Gold demand drops as dollar strengthens globally", sentiment: "bearish", source: "Reuters" },
   { text: "IMF warns of global growth slowdown in 2026", sentiment: "bearish", source: "IMF" },
   { text: "China tech crackdown spills into global markets", sentiment: "bearish", source: "Bloomberg" },
+  { text: "OPEC+ cuts output by 1M barrels, crude prices surge", sentiment: "bullish", source: "Reuters" },
+  { text: "US crude inventories draw down sharply, supply tightens", sentiment: "bullish", source: "EIA" },
+  { text: "Recession fears weigh on oil demand outlook globally", sentiment: "bearish", source: "Bloomberg" },
+  { text: "Dollar strengthens, commodity prices under pressure", sentiment: "bearish", source: "FT" },
 ];
 
 const INTERVALS = ["1m","5m","15m","1H","4H","1D","1W"];
@@ -69,7 +73,7 @@ function getSignal(candles, news) {
   const prices = candles.slice(-8).map(c => c.close);
   const trend = prices[prices.length - 1] - prices[0];
   const score = bullish * 14 + (trend > 0 ? 22 : -22) + Math.random() * 18;
-  if (score > 38) return { signal: "BUY",  color: "#26a69a", bg: "#26a69a12", confidence: Math.floor(68 + Math.random() * 22), target: "+2.4%", stop: "-1.1%" };
+  if (score > 45) return { signal: "BUY",  color: "#26a69a", bg: "#26a69a12", confidence: Math.floor(68 + Math.random() * 22), target: "+2.4%", stop: "-1.1%" };
   if (score < 16) return { signal: "SELL", color: "#ef5350", bg: "#ef535012", confidence: Math.floor(62 + Math.random() * 22), target: "-2.1%", stop: "+1.3%" };
   return            { signal: "HOLD", color: "#f59e0b", bg: "#f59e0b12", confidence: Math.floor(55 + Math.random() * 18), target: "±0.5%", stop: "±0.8%" };
 }
@@ -394,7 +398,7 @@ function TVChart({ market, candles, onPriceUpdate, signal, prediction }) {
       },
       rightPriceScale: { borderColor: BORDER, scaleMargins: { top: 0.06, bottom: showVol ? 0.26 : 0.06 }, autoScale: true },
       timeScale: { borderColor: BORDER, timeVisible: true, secondsVisible: false, barSpacing: 8, rightOffset: 10 },
-      watermark: { visible: true, fontSize: 13, horzAlign: "left", vertAlign: "top", color: "rgba(41,98,255,0.06)", text: "PULSETRADE AI  ·  " + market.id },
+      watermark: { visible: true, fontSize: 13, horzAlign: "left", vertAlign: "top", color: "rgba(41,98,255,0.06)", text: "PULSETRADE AI  ·  " + market.id + "  ·  BY TWUMVE" },
       handleScroll: true, handleScale: true,
     });
     chartRef.current = chart;
@@ -495,7 +499,7 @@ function TVChart({ market, candles, onPriceUpdate, signal, prediction }) {
       last.low   = Math.min(last.low,  last.close);
       candleRef.current?.update({ ...last });
       onPriceUpdate?.(last.close);
-    }, 1500);
+    }, 800);
     return () => clearInterval(t);
   }, [candles, market]);
 
@@ -737,8 +741,8 @@ function TVChart({ market, candles, onPriceUpdate, signal, prediction }) {
    MAIN APP
 ═══════════════════════════════════════════ */
 export default function PulseTradeAI() {
-  const [market,       setMarket]       = useState(MARKETS[0]);
-  const [candles,      setCandles]      = useState(() => generateOHLCV(MARKETS[0].base));
+  const [market,       setMarket]       = useState(MARKETS[1]);
+  const [candles,      setCandles]      = useState(() => generateOHLCV(MARKETS[1].base));
   const [news,         setNews]         = useState([]);
   const [signal,       setSignal]       = useState(null);
   const [loading,      setLoading]      = useState(false);
@@ -793,7 +797,7 @@ export default function PulseTradeAI() {
   useEffect(() => {
     const t = setInterval(() => {
       setCommentary(AI_COMMENTARY[Math.floor(Math.random() * AI_COMMENTARY.length)]);
-    }, 8000);
+    }, 6000);
     return () => clearInterval(t);
   }, []);
 
