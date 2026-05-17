@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createChart, CrosshairMode, LineStyle, PriceScaleMode } from "lightweight-charts";
-const NEWS_API_KEY = "your_key_here";
+const NEWS_API_KEY = "8603087de8be4d5c96370d5adfc3a1ab";
 
 /* ─── MARKETS ─── */
 const MARKETS = [
@@ -497,7 +497,7 @@ function Spark({ data, up }) {
 export default function PulseTradeAI() {
   const [market, setMarket] = useState(MARKETS[0]);
   const [candles, setCandles] = useState(() => generateOHLCV(MARKETS[0].base));
-  const [news, setNews] = useState(pickNews());
+  const [news, setNews] = useState([]);
   const [signal, setSignal] = useState(null);
   const [loading, setLoading] = useState(false);
   const [aiReason, setAiReason] = useState("");
@@ -537,7 +537,7 @@ export default function PulseTradeAI() {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-calls": "true" },
         body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] })
       });
       const data = await res.json();
