@@ -290,6 +290,33 @@ function buildAIReasoning(candles, signal, prediction, patterns, bosSignals) {
   return lines;
 }
 
+function classifyTradeType(signal, prediction, candles) {
+  const vol = prediction?.volatility || 0;
+  const conf = signal?.confidence || 60;
+  const prices = candles.slice(-20).map(c => c.close);
+  const range = Math.max(...prices) - Math.min(...prices);
+  const rangeRatio = range / prices[prices.length-1] * 100;
+  if (vol > 1.5 || rangeRatio > 3)  return { type:"Scalp",      duration:"< 1 hour",   risk:"HIGH",   emoji:"⚡" };
+  if (vol > 0.8 || rangeRatio > 1.5) return { type:"Intraday",   duration:"1–8 hours",  risk:"MED",    emoji:"📈" };
+  if (conf > 70)                      return { type:"Swing Trade", duration:"1–5 days",   risk:"MED",    emoji:"🎯" };
+  if (conf > 55)                      return { type:"Mid-Term",    duration:"1–4 weeks",  risk:"LOW-MED",emoji:"📊" };
+  return                               { type:"Wait/Hold",   duration:"Unclear",    risk:"LOW",    emoji:"⏸" };
+}
+
+function getDecision(signal, prediction, patterns, bosSignals) {
+  const conf = signal?.confidence || 60;
+  const bull = prediction?.bullProb || 50;
+  const hasBOS = bosSignals?.some(b => b.dir === "bullish");
+  const hasCHOCH = bosSignals?.some(b => b.type === "CHOCH");
+  const volHigh = (prediction?.volatility || 0) > 1.5;
+  if (signal?.signal === "SELL" && hasCHOCH) return { action:"EXIT", color:"#ef5350", bg:"#ef535008", desc:"Structure break confirmed. Exit or avoid longs.", urgency:"HIGH" };
+  if (signal?.signal === "BUY"  && hasBOS && conf > 70) return { action:"BUY",  color:"#26a69a", bg:"#26a69a08", desc:"Bullish BOS confirmed with strong momentum.", urgency:"HIGH" };
+  if (signal?.signal === "BUY"  && conf > 60) return { action:"BUY",  color:"#26a69a", bg:"#26a69a08", desc:"Bullish setup forming. Manage position size.", urgency:"MED" };
+  if (signal?.signal === "SELL" && conf > 60) return { action:"SELL", color:"#ef5350", bg:"#ef535008", desc:"Bearish momentum building. Watch for continuation.", urgency:"MED" };
+  if (volHigh) return { action:"WAIT", color:"#f59e0b", bg:"#f59e0b08", desc:"High volatility detected. Wait for cleaner setup.", urgency:"LOW" };
+  return { action:"HOLD", color:"#787b86", bg:"#78769608", desc:"No clear edge. Consolidation phase — stay patient.", urgency:"LOW" };
+}
+
 const AI_COMMENTARY = [
   "Smart money accumulation detected near support zone.",
   "Liquidity sweep likely before next directional move.",
@@ -729,6 +756,8 @@ export default function PulseTradeAI() {
   const [scenarios,   setScenarios]   = useState([]);
   const [reasoning,   setReasoning]   = useState([]);
   const [bosSignals,  setBosSignals]  = useState([]);
+  const [decision,    setDecision]    = useState(null);
+  const [tradeType,   setTradeType]   = useState(null);
   const commentaryRef = useRef(null);
 
   useEffect(() => {
@@ -755,6 +784,8 @@ export default function PulseTradeAI() {
     setBosSignals(bos);
     setScenarios(generateScenarios(pred, sig, pats));
     setReasoning(buildAIReasoning(c, sig, pred, pats, bos));
+    setDecision(getDecision(sig, pred, pats, bos));
+    setTradeType(classifyTradeType(sig, pred, c));
     setCommentary(AI_COMMENTARY[Math.floor(Math.random() * AI_COMMENTARY.length)]);
     setAiReason("");
   })(); }, [market]);
@@ -813,6 +844,8 @@ export default function PulseTradeAI() {
         @keyframes fadeIn { from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)} }
         @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(38,166,154,0.5)}70%{box-shadow:0 0 0 5px rgba(38,166,154,0)}100%{box-shadow:0 0 0 0 rgba(38,166,154,0)} }
         @keyframes slideIn { from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:translateX(0)} }
+        @keyframes ticker { 0%{opacity:0;transform:translateY(6px)}10%{opacity:1;transform:translateY(0)}90%{opacity:1;transform:translateY(0)}100%{opacity:0;transform:translateY(-6px)} }
+        .ticker-text { animation:ticker 8s ease infinite; }
         .blink { animation:blink 2s infinite; }
         .fadein { animation:fadeIn .3s ease; }
         .pulse-dot { animation:pulse 2s infinite; }
@@ -849,6 +882,9 @@ export default function PulseTradeAI() {
           <span style={{ fontSize:13, fontWeight:700, color:"#e0e3ea", fontFamily:"JetBrains Mono,monospace", letterSpacing:.5 }}>{market.id}</span>
           <span style={{ fontSize:14, fontWeight:600, color: up ? C.green : C.red, fontFamily:"JetBrains Mono,monospace", textShadow: up ? "0 0 8px rgba(38,166,154,0.5)" : "0 0 8px rgba(239,83,80,0.5)" }}>{fmt(livePrice, market)}</span>
           <span style={{ fontSize:10, padding:"1px 7px", borderRadius:3, background: up ? C.green+"18" : C.red+"18", color: up ? C.green : C.red, fontWeight:700 }}>{up?"+":""}{priceChange}%</span>
+          {decision && (
+            <span style={{ fontSize:9, padding:"1px 8px", borderRadius:3, background:decision.color+"18", color:decision.color, fontWeight:700, letterSpacing:1, fontFamily:"monospace", border:`1px solid ${decision.color}30` }}>{decision.action}</span>
+          )}
         </div>
 
         <div style={{ width:1, height:20, background:C.border }} />
@@ -892,20 +928,57 @@ export default function PulseTradeAI() {
             })}
           </div>
 
-          {/* Signal + AI button */}
-          {signal && (
-            <div style={{ padding:"10px", borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
-              <div style={{ fontSize:9, color:C.muted, letterSpacing:2, marginBottom:7 }}>AI SIGNAL</div>
-              <div style={{ background:signal.bg, border:`1px solid ${signal.color}50`, borderRadius:4, padding:"11px 10px", textAlign:"center", marginBottom:8, boxShadow:`0 0 16px ${signal.color}18` }}>
-                <div style={{ fontSize:24, fontWeight:800, color:signal.color, lineHeight:1, fontFamily:"JetBrains Mono,monospace", letterSpacing:2 }}>{signal.signal}</div>
-                <div style={{ fontSize:10, color:C.muted, margin:"5px 0 3px" }}>{signal.confidence}% confidence</div>
-                <div style={{ display:"flex", gap:8, justifyContent:"center", fontSize:9 }}>
-                  <span style={{ color:C.green }}>TP {signal.target}</span>
-                  <span style={{ color:C.red }}>SL {signal.stop}</span>
+          {/* AI Decision Engine */}
+          {decision && (
+            <div style={{ padding:"10px", borderTop:"1px solid #2a2e39", flexShrink:0, display:"flex", flexDirection:"column", gap:8 }}>
+
+              {/* Primary decision */}
+              <div style={{ background:decision.bg, border:`1px solid ${decision.color}30`, borderRadius:5, padding:"10px", textAlign:"center", position:"relative", overflow:"hidden" }}>
+                <div style={{ fontSize:9, color:"#4a5568", letterSpacing:2, marginBottom:6 }}>AI DECISION</div>
+                <div style={{ fontSize:22, fontWeight:900, color:decision.color, fontFamily:"JetBrains Mono,monospace", letterSpacing:3, lineHeight:1 }}>{decision.action}</div>
+                <div style={{ fontSize:8, color:decision.color+"99", marginTop:4, letterSpacing:1 }}>URGENCY: {decision.urgency}</div>
+                <div style={{ fontSize:9, color:"#4a5568", marginTop:6, lineHeight:1.5 }}>{decision.desc}</div>
+              </div>
+
+              {/* Trade type */}
+              {tradeType && (
+                <div style={{ background:"#1a1e2e", border:"1px solid #2a2e39", borderRadius:4, padding:"7px 10px", display:"flex", alignItems:"center", gap:8 }}>
+                  <span style={{ fontSize:14 }}>{tradeType.emoji}</span>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:10, color:"#e0e3ea", fontWeight:600 }}>{tradeType.type}</div>
+                    <div style={{ fontSize:9, color:"#4a5568" }}>{tradeType.duration}</div>
+                  </div>
+                  <div style={{ fontSize:8, padding:"2px 6px", borderRadius:2, background: tradeType.risk==="HIGH"?"#ef535018":tradeType.risk==="MED"?"#f59e0b18":"#26a69a18", color: tradeType.risk==="HIGH"?C.red:tradeType.risk==="MED"?C.amber:C.green, fontWeight:700 }}>{tradeType.risk}</div>
+                </div>
+              )}
+
+              {/* TP/SL + confidence */}
+              {signal && (
+                <div style={{ display:"flex", gap:6 }}>
+                  <div style={{ flex:1, background:"#26a69a10", border:"1px solid #26a69a25", borderRadius:4, padding:"5px 8px", textAlign:"center" }}>
+                    <div style={{ fontSize:8, color:"#4a5568", marginBottom:2 }}>TARGET</div>
+                    <div style={{ fontSize:11, color:C.green, fontWeight:700, fontFamily:"monospace" }}>{signal.target}</div>
+                  </div>
+                  <div style={{ flex:1, background:"#ef535010", border:"1px solid #ef535025", borderRadius:4, padding:"5px 8px", textAlign:"center" }}>
+                    <div style={{ fontSize:8, color:"#4a5568", marginBottom:2 }}>STOP</div>
+                    <div style={{ fontSize:11, color:C.red, fontWeight:700, fontFamily:"monospace" }}>{signal.stop}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Confidence meter */}
+              <div>
+                <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"#4a5568", marginBottom:3 }}>
+                  <span>Confidence</span>
+                  <span style={{ color: signal?.confidence > 70 ? C.green : signal?.confidence > 55 ? C.amber : C.red }}>{signal?.confidence}%</span>
+                </div>
+                <div style={{ background:"#131722", borderRadius:2, height:3, overflow:"hidden" }}>
+                  <div style={{ width:`${signal?.confidence || 0}%`, height:"100%", background: signal?.confidence > 70 ? C.green : signal?.confidence > 55 ? C.amber : C.red, transition:"width 1s" }} />
                 </div>
               </div>
+
               <button className="analyze-btn" onClick={analyzeMarket} disabled={loading}>
-                {loading ? "⏳ Scanning…" : "🤖 AI Analysis"}
+                {loading ? "⏳ Scanning…" : "🤖 Deep Analysis"}
               </button>
             </div>
           )}
@@ -923,7 +996,7 @@ export default function PulseTradeAI() {
             <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
               <div style={{ background:"#0a0d14", borderBottom:"1px solid #1a2035", padding:"5px 14px", flexShrink:0, display:"flex", gap:10, alignItems:"center", borderLeft:"2px solid #2962ff33" }}>
                 <span className="blink" style={{ fontSize:8, color:"#2962ff", letterSpacing:2, whiteSpace:"nowrap" }}>● AI</span>
-                <p style={{ fontSize:10, color:"#4a5568", lineHeight:1, margin:0, overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis", fontStyle:"italic" }}>{commentary}</p>
+                <p key={commentary} className="ticker-text" style={{ fontSize:10, color:"#4a5568", lineHeight:1, margin:0, overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis", fontStyle:"italic" }}>{commentary}</p>
                 {prediction && (
                   <div style={{ marginLeft:"auto", display:"flex", gap:8, flexShrink:0, alignItems:"center" }}>
                     <span style={{ fontSize:9, color:"#4a5568", letterSpacing:1 }}>VOL {prediction.volatility}%</span>
@@ -934,9 +1007,14 @@ export default function PulseTradeAI() {
                 )}
               </div>
               {aiReason && (
-                <div className="fadein" style={{ background:"#2962ff08", borderBottom:"1px solid #2962ff20", padding:"7px 14px", flexShrink:0, display:"flex", gap:10, alignItems:"flex-start" }}>
-                  <span style={{ fontSize:9, color:C.accent, letterSpacing:2, whiteSpace:"nowrap", marginTop:1 }}>● ANALYSIS</span>
-                  <p style={{ fontSize:11, color:"#9ca3af", lineHeight:1.65, margin:0 }}>{aiReason}</p>
+                <div className="fadein" style={{ background:"#0d1117", borderBottom:"1px solid #2962ff18", padding:"8px 14px", flexShrink:0 }}>
+                  <div style={{ fontSize:8, color:"#2962ff", letterSpacing:2, marginBottom:6 }}>● DEEP ANALYSIS</div>
+                  {aiReason.split("\n").filter(l => l.trim()).map((line, i) => (
+                    <div key={i} style={{ display:"flex", gap:8, marginBottom:4, alignItems:"flex-start" }}>
+                      <span style={{ fontSize:9, color:"#2962ff33", fontFamily:"monospace", flexShrink:0, marginTop:1 }}>{String(i+1).padStart(2,"0")}</span>
+                      <span style={{ fontSize:10, color:"#6b7280", lineHeight:1.6 }}>{line.replace(/^\d+\.\s*/,"")}</span>
+                    </div>
+                  ))}
                 </div>
               )}
               <div style={{ flex:1, overflow:"hidden" }}>
@@ -1051,20 +1129,28 @@ export default function PulseTradeAI() {
                 </div>
               </div>
               {news.length===0 && <div style={{ color:C.muted, fontSize:12, textAlign:"center", paddingTop:40 }}>Loading news…</div>}
-              {news.map((n,i) => (
-                <div key={i} className="news-item" onClick={() => n.url && window.open(n.url,"_blank")}>
-                  <div style={{ width:3, minHeight:40, borderRadius:2, background: n.sentiment==="bullish"?C.green:C.red, flexShrink:0, marginTop:2 }} />
-                  <div style={{ flex:1 }}>
-                    <div style={{ fontSize:12, color:"#b2b5be", lineHeight:1.6, marginBottom:5 }}>{n.text}</div>
-                    <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                      <span style={{ fontSize:9, color:C.muted }}>{n.source}</span>
-                      <span style={{ fontSize:9, padding:"1px 6px", borderRadius:3, background: n.sentiment==="bullish"?C.green+"15":C.red+"15", color: n.sentiment==="bullish"?C.green:C.red, fontWeight:700 }}>
-                        {n.sentiment==="bullish"?"BULLISH":"BEARISH"}
-                      </span>
+              {news.map((n,i) => {
+                const impact = n.sentiment==="bullish"
+                  ? ["Price support likely","Momentum boost possible","Watch for follow-through"][i%3]
+                  : ["Sell pressure may increase","Watch for breakdown","Risk-off sentiment rising"][i%3];
+                const timeEffect = ["Short-term","Intraday","Swing-level"][i%3];
+                return (
+                  <div key={i} className="news-item" onClick={() => n.url && window.open(n.url,"_blank")}>
+                    <div style={{ width:3, minHeight:40, borderRadius:2, background: n.sentiment==="bullish"?C.green:C.red, flexShrink:0, marginTop:2 }} />
+                    <div style={{ flex:1 }}>
+                      <div style={{ fontSize:11, color:"#b2b5be", lineHeight:1.6, marginBottom:5 }}>{n.text}</div>
+                      <div style={{ fontSize:9, color:"#4a5568", fontStyle:"italic", marginBottom:5 }}>↳ {impact}</div>
+                      <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+                        <span style={{ fontSize:9, color:"#374151" }}>{n.source}</span>
+                        <span style={{ fontSize:8, padding:"1px 5px", borderRadius:2, background: n.sentiment==="bullish"?C.green+"15":C.red+"15", color: n.sentiment==="bullish"?C.green:C.red, fontWeight:700 }}>
+                          {n.sentiment==="bullish"?"▲ BULL":"▼ BEAR"}
+                        </span>
+                        <span style={{ fontSize:8, padding:"1px 5px", borderRadius:2, background:"#2a2e39", color:"#4a5568" }}>{timeEffect}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -1165,6 +1251,19 @@ export default function PulseTradeAI() {
             })}
           </div>
           <div style={{ padding:"10px", borderTop:"1px solid #2a2e39", background:"#131722", flexShrink:0 }}>
+            {prediction && (
+              <div style={{ marginBottom:12 }}>
+                <div style={{ fontSize:9, color:"#4a5568", letterSpacing:2, marginBottom:6 }}>SENTIMENT</div>
+                <div style={{ display:"flex", gap:4, marginBottom:4 }}>
+                  <div style={{ flex:prediction.bullProb, height:4, borderRadius:2, background:"#26a69a", opacity:0.8 }} />
+                  <div style={{ flex:prediction.bearProb, height:4, borderRadius:2, background:"#ef5350", opacity:0.8 }} />
+                </div>
+                <div style={{ display:"flex", justifyContent:"space-between", fontSize:8, color:"#4a5568" }}>
+                  <span style={{ color:"#26a69a" }}>Bull {prediction.bullProb}%</span>
+                  <span style={{ color:"#ef5350" }}>Bear {prediction.bearProb}%</span>
+                </div>
+              </div>
+            )}
             <div style={{ fontSize:9, color:C.muted, letterSpacing:2, marginBottom:7 }}>AI WIN RATE</div>
             <div style={{ fontSize:26, fontWeight:700, color: winRate>65?C.green:C.amber, fontFamily:"JetBrains Mono,monospace", lineHeight:1, textShadow: winRate>65?"0 0 12px rgba(38,166,154,0.4)":"0 0 12px rgba(245,158,11,0.4)" }}>{winRate}%</div>
             <div style={{ fontSize:9, color:C.muted, marginTop:3 }}>{accuracy.total} signals</div>
