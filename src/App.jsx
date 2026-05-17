@@ -2,7 +2,6 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { createChart, CrosshairMode, LineStyle, PriceScaleMode } from "lightweight-charts";
 
 const NEWS_API_KEY = "8603087de8be4d5c96370d5adfc3a1ab";
-const ANTHROPIC_KEY = "sk-ant-api03-"; // paste your full key after this
 
 /* ─── MARKETS ─── */
 const MARKETS = [
@@ -149,9 +148,10 @@ function TVChart({ market, candles, onPriceUpdate }) {
   const ema20Ref    = useRef(null);
   const ema50Ref    = useRef(null);
   const rsiSerRef   = useRef(null);
-  const drawRef     = useRef({ active: null, points: [], overlays: [] });
+  const drawRef     = useRef({ active: "cursor", points: [], overlays: [] });
 
   const [tool,      setTool]      = useState("cursor");
+  useEffect(() => { drawRef.current.active = tool; }, [tool]);
   const [showEMA20, setShowEMA20] = useState(true);
   const [showEMA50, setShowEMA50] = useState(true);
   const [showVol,   setShowVol]   = useState(true);
@@ -208,6 +208,42 @@ function TVChart({ market, candles, onPriceUpdate }) {
       if (!p.time || !p.seriesData) { setOhlc(null); return; }
       const d = p.seriesData.get(cs);
       if (d) setOhlc(d);
+    });
+
+    chart.subscribeClick(p => {
+      const ds = drawRef.current;
+      if (ds.active === "cursor" || !p.point || !p.time) return;
+      if (ds.active === "eraser") {
+        ds.overlays.forEach(s => { try { chart.removeSeries(s); } catch {} });
+        drawRef.current = { active: "cursor", points: [], overlays: [] };
+        return;
+      }
+      const price = chart.priceScale("right").coordinateToPrice(p.point.y);
+      if (!price) return;
+      if (ds.active === "hline") {
+        const s = chart.addLineSeries({ color: "#f59e0baa", lineWidth: 1, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: true });
+        s.setData([{ time: candles[0].time, value: price }, { time: candles[candles.length-1].time + 86400*60, value: price }]);
+        ds.overlays.push(s); return;
+      }
+      if (ds.active === "trendline" || ds.active === "fib") {
+        if (!ds.points.length) { ds.points = [{ time: p.time, price }]; return; }
+        const p1 = ds.points[0];
+        if (ds.active === "trendline") {
+          const s = chart.addLineSeries({ color: "#2962ff", lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+          const t1 = Math.min(p1.time, p.time), t2 = Math.max(p1.time, p.time);
+          s.setData([{ time: t1, value: p1.time <= p.time ? p1.price : price }, { time: t2, value: p1.time <= p.time ? price : p1.price }]);
+          ds.overlays.push(s);
+        } else {
+          const hi = Math.max(p1.price, price), lo = Math.min(p1.price, price), range = hi - lo;
+          [0, 23.6, 38.2, 50, 61.8, 78.6, 100].forEach(pct => {
+            const level = hi - range * (pct / 100);
+            const s = chart.addLineSeries({ color: `rgba(206,147,216,${pct===0||pct===100?0.9:0.5})`, lineWidth: 1, lineStyle: LineStyle.Dotted, priceLineVisible: false, lastValueVisible: true, title: `${pct}%` });
+            s.setData([{ time: candles[0].time, value: level }, { time: candles[candles.length-1].time + 86400*60, value: level }]);
+            ds.overlays.push(s);
+          });
+        }
+        ds.points = [];
+      }
     });
 
     if (rsiRef.current) {
@@ -390,7 +426,7 @@ function TVChart({ market, candles, onPriceUpdate }) {
               Click second point · {drawRef.current.active}
             </div>
           )}
-          <div ref={mainRef} style={{ flex: showRSI ? "0 0 70%" : 1, cursor: tool==="cursor" ? "default" : "crosshair" }} onClick={handleClick} />
+          <div ref={mainRef} style={{ flex: showRSI ? "0 0 70%" : 1, cursor: tool==="cursor" ? "default" : "crosshair" }} />
           {showRSI && (
             <>
               <div style={{ height:1, background: BORDER }} />
@@ -418,7 +454,7 @@ export default function PulseTradeAI() {
   const [priceChange,  setPriceChange]  = useState(0);
   const [activeIv,     setActiveIv]     = useState("5m");
   const [tab,          setTab]          = useState("chart");
-  const [accuracy,     setAccuracy]     = useState({ total:147, correct:103, history:["W","W","L","W","W","W","L","W","W","W"] });
+  const [accuracy,     setAccuracy]     = useState({ total:0, correct:0, history:[] });
   const [marketPrices, setMarketPrices] = useState(() => Object.fromEntries(MARKETS.map(m => [m.id, m.base])));
   const [sparks]    = useState(() => MARKETS.map(m => Array.from({ length:24 }, () => m.base * (0.96 + Math.random() * 0.08))));
 
@@ -448,7 +484,7 @@ export default function PulseTradeAI() {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "anthropic-dangerous-direct-browser-calls": "true" },
+        headers: { "Content-Type": "application/json", "x-api-key": "your_anthropic_key_here", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-calls": "true" },
         body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1000, messages:[{ role:"user", content:prompt }] })
       });
       const data = await res.json();
