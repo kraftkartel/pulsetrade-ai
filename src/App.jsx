@@ -4,7 +4,7 @@ import { createChart, CrosshairMode, LineStyle } from "lightweight-charts";
 /* ════════════════════════════════════════════════════════════════
    PULSETRADE AI™  —  INSTITUTIONAL MARKET INTELLIGENCE SYSTEM
    PulseScore™ · Smart Exit Radar™ · TrapSense AI™ · Market DNA™
-   BY TWUMVE  ·  v3.0 ELITE
+   BY TWUMVE  ·  v3.1 ELITE  —  Beginner/Advanced/Pro Edition
 ════════════════════════════════════════════════════════════════ */
 
 const NEWS_API_KEY = "8603087de8be4d5c96370d5adfc3a1ab";
@@ -19,6 +19,59 @@ const MARKETS = [
 ];
 
 const INTERVALS = ["1m","5m","15m","1H","4H","1D","1W"];
+
+/* ── PATCH 4: Beginner/Advanced/Pro mode system ── */
+const MODES = ["Beginner", "Advanced", "Pro"];
+
+const BEGINNER_TRANSLATIONS = {
+  "MOMENTUM EXHAUSTION": {
+    title: "🐢 Trade Slowing Down",
+    desc: "The market has been moving fast but is now running out of steam. Like a sprinter getting tired — expect a slowdown or reversal soon."
+  },
+  "OVEREXTENDED MOVE": {
+    title: "⚠️ Price Stretched Too Far",
+    desc: "Price moved very far from its average. Think of a rubber band — the further it stretches, the more likely it snaps back."
+  },
+  "WEAKENING TREND": {
+    title: "📉 Direction Losing Strength",
+    desc: "The market is still moving in one direction, but the force behind it is fading. This could mean the trend is about to change."
+  },
+  "VOLATILITY COMPRESSION": {
+    title: "💤 Calm Before the Storm",
+    desc: "The market has gone very quiet. This usually means a big move is coming — but we don't know which way yet. Be patient."
+  },
+  "FAKE BREAKOUT": {
+    title: "🎭 Possible False Move",
+    desc: "Price broke through a level, but the move may not be real. Big traders sometimes push price to trick smaller traders into buying/selling at the wrong time."
+  },
+  "STOP HUNT": {
+    title: "🎯 Stop-Loss Trap Active",
+    desc: "Price is near a level where many traders have their stop-losses. Big players may push price there to trigger those stops, then reverse direction."
+  },
+  "EMOTIONAL TRAP": {
+    title: "😱 FOMO Zone Detected",
+    desc: "Price has moved so much that traders may be panicking. This is exactly when mistakes happen — stay calm and don't chase."
+  },
+  "VOLUME TRAP": {
+    title: "🎰 Suspicious Volume Spike",
+    desc: "Lots of trading activity is happening, but the price isn't following. This usually signals big players exiting while small traders pile in."
+  },
+};
+
+const getBeginnerSignalText = (signal) => {
+  if (signal === "BUY") return {
+    action: "✅ Consider Buying",
+    sub: "The AI sees more buyers than sellers right now. The market shows signs of going up. Always use a stop-loss."
+  };
+  if (signal === "SELL") return {
+    action: "❌ Consider Selling / Staying Out",
+    sub: "Selling pressure is building. The market may be heading lower. Avoid new buy entries."
+  };
+  return {
+    action: "⏸ Wait for a Better Setup",
+    sub: "Conditions are mixed right now. Patience protects your money — waiting IS a valid trade decision."
+  };
+};
 
 const DRAW_TOOLS = [
   { id: "cursor",    icon: "↖", label: "Cursor" },
@@ -211,8 +264,7 @@ function buildRegressionChannel(candles) {
 
 /* ══════════════════════════════════════════
    MARKET DNA™ — CORE INTELLIGENCE ENGINE
-   Computes all proprietary metrics for
-   the selected market only.
+   Per-market computation only.
 ══════════════════════════════════════════ */
 function computeMarketDNA(candles, news, bosSignals) {
   const rsiData   = calcRSI(candles);
@@ -231,22 +283,18 @@ function computeMarketDNA(candles, news, bosSignals) {
   const lastEMA20 = ema20[ema20.length - 1]?.value ?? lastClose;
   const lastEMA50 = ema50[ema50.length - 1]?.value ?? lastClose;
 
-  // Volatility
   const atr = candles.slice(-14).reduce((acc,c) => acc + (c.high - c.low), 0) / 14;
   const volPct = parseFloat((atr / lastClose * 100).toFixed(3));
 
-  // Volume analysis
   const vols = candles.slice(-20).map(c => c.volume);
   const avgVol = vols.slice(0,-1).reduce((a,b)=>a+b,0)/(vols.length-1);
   const lastVol = vols[vols.length-1];
   const volRatio = lastVol / avgVol;
 
-  // Trend strength (ADX-like)
   const priceTrend = (lastClose - candles[candles.length-20].close) / candles[candles.length-20].close * 100;
   const emaTrend   = lastEMA20 > lastEMA50 ? 1 : -1;
   const trendStrength = Math.min(100, Math.abs(priceTrend) * 8 + Math.abs(lastRSI - 50) * 0.6);
 
-  // Market bias score (−100 to +100)
   const newsScore   = (news.filter(n=>n.sentiment==="bullish").length - news.filter(n=>n.sentiment==="bearish").length) * 12;
   const rsiScore    = (lastRSI - 50) * 0.8;
   const trendScore  = emaTrend * Math.min(30, trendStrength * 0.4);
@@ -255,7 +303,6 @@ function computeMarketDNA(candles, news, bosSignals) {
   const rawBias     = newsScore + rsiScore + trendScore + macdScore + bosScore;
   const marketBias  = Math.max(-100, Math.min(100, rawBias));
 
-  // Reversal probability
   const rsiExtreme    = lastRSI > 72 || lastRSI < 28;
   const rsiDivergence = (lastRSI < prevRSI && lastClose > prevClose) || (lastRSI > prevRSI && lastClose < prevClose);
   const atRegChanEdge = lastClose > regCh.upper[regCh.upper.length-5]?.value * 0.998 || lastClose < regCh.lower[regCh.lower.length-5]?.value * 1.002;
@@ -263,7 +310,6 @@ function computeMarketDNA(candles, news, bosSignals) {
   const reversalScore = (rsiExtreme?28:0) + (rsiDivergence?25:0) + (atRegChanEdge?22:0) + (nearLiqZone?15:0) + Math.random()*10;
   const reversalProb  = Math.min(95, Math.max(5, Math.round(reversalScore)));
 
-  // TrapSense AI™
   const highVolSpike   = volRatio > 2.2;
   const momentumWeak   = Math.abs(lastMACD?.hist??0) < Math.abs(macdData[macdData.length-5]?.hist??1) * 0.4;
   const fakeBreakout   = atRegChanEdge && highVolSpike && momentumWeak;
@@ -272,7 +318,6 @@ function computeMarketDNA(candles, news, bosSignals) {
   const trapScore      = (fakeBreakout?35:0) + (stopHunt?28:0) + (emotionalEntry?20:0) + (highVolSpike&&!momentumWeak?10:0) + Math.random()*12;
   const trapProb       = Math.min(92, Math.max(4, Math.round(trapScore)));
 
-  // Smart Exit Radar™
   const momentumExhaustion = momentumWeak && trendStrength > 55;
   const overextended        = Math.abs(lastClose - lastEMA50) / lastEMA50 > 0.035;
   const volCompression      = volPct < 0.4;
@@ -280,16 +325,13 @@ function computeMarketDNA(candles, news, bosSignals) {
   const exitRiskScore       = (momentumExhaustion?32:0) + (overextended?28:0) + (reversalProb>65?22:0) + (weakenTrend?18:0) + (volCompression?12:0) + Math.random()*10;
   const exitRisk            = Math.min(98, Math.max(3, Math.round(exitRiskScore)));
 
-  // Smart Money Bias
   const largeBodyCandles = candles.slice(-8).filter(c => Math.abs(c.close-c.open)/(c.high-c.low||1) > 0.65);
   const institutionalFlow = (largeBodyCandles.filter(c=>c.close>c.open).length - largeBodyCandles.filter(c=>c.close<c.open).length) * 15;
   const smBias = Math.max(-100, Math.min(100, institutionalFlow + macdScore * 0.6 + bosScore * 0.5));
 
-  // PulseScore™ (0–100 composite)
   const bullishFactor = (marketBias + 100) / 2;
   const pulseScore    = Math.round(bullishFactor * (1 - trapProb/200) * (1 - exitRisk/250) * (trendStrength/100 * 0.4 + 0.6));
 
-  // Final signal
   let signal, signalColor, signalBg;
   if (pulseScore >= 62 && marketBias > 15) {
     signal = "BUY"; signalColor = "#00d4a8"; signalBg = "rgba(0,212,168,0.08)";
@@ -299,21 +341,18 @@ function computeMarketDNA(candles, news, bosSignals) {
     signal = "WAIT"; signalColor = "#ffd600"; signalBg = "rgba(255,214,0,0.08)";
   }
 
-  // Trap warnings
   const trapWarnings = [];
   if (fakeBreakout) trapWarnings.push({ type:"FAKE BREAKOUT", desc:"Volume spike without momentum — possible false move.", severity:"HIGH" });
   if (stopHunt)     trapWarnings.push({ type:"STOP HUNT",    desc:"Price near liquidity pool with unusual volume.", severity:"HIGH" });
   if (emotionalEntry) trapWarnings.push({ type:"EMOTIONAL TRAP", desc:"RSI extreme — retail FOMO entry zone detected.", severity:"MED" });
   if (highVolSpike && momentumWeak) trapWarnings.push({ type:"VOLUME TRAP", desc:"High volume, weak momentum — distribution likely.", severity:"MED" });
 
-  // Exit warnings
   const exitWarnings = [];
   if (momentumExhaustion) exitWarnings.push({ type:"MOMENTUM EXHAUSTION", desc:"MACD histogram shrinking — trend losing power.", severity:"HIGH" });
   if (overextended)       exitWarnings.push({ type:"OVEREXTENDED MOVE", desc:`Price ${((Math.abs(lastClose-lastEMA50)/lastEMA50)*100).toFixed(1)}% from EMA50 — mean reversion risk.`, severity:"HIGH" });
   if (weakenTrend)        exitWarnings.push({ type:"WEAKENING TREND", desc:"Price trend strong but momentum diverging.", severity:"MED" });
   if (volCompression)     exitWarnings.push({ type:"VOLATILITY COMPRESSION", desc:"ATR contracting — explosive move incoming, direction unclear.", severity:"MED" });
 
-  // AI Reasoning for "Why AI Thinks This"
   const aiReasons = [
     { label:"STRUCTURE", icon:"⬡", content: emaTrend > 0
       ? `EMA20 (${fmt(lastEMA20,{decimals:2})}) trading above EMA50 (${fmt(lastEMA50,{decimals:2})}). Bullish stack confirms uptrend.`
@@ -345,7 +384,6 @@ function computeMarketDNA(candles, news, bosSignals) {
       : `Mixed institutional flow. No clear smart money direction.` },
   ];
 
-  // Scenarios
   const scenarios = [
     {
       id:"A", label:"Bullish Continuation", prob: marketBias > 20 ? Math.min(75, 40 + marketBias/3) : Math.max(10, 30 + marketBias/4),
@@ -366,11 +404,9 @@ function computeMarketDNA(candles, news, bosSignals) {
       invalidate: "Fresh BOS with strong volume above swing high.",
     },
   ];
-  // Normalize probs to ~100
   const pSum = scenarios.reduce((a,s) => a+s.prob, 0);
   scenarios.forEach(s => s.prob = Math.round(s.prob / pSum * 100));
 
-  // Psychology warning
   let psychWarning = null;
   if (pulseScore < 42) psychWarning = { msg:"Current conditions favor waiting over entering.", sub:"Patience statistically outperforms low-edge setups.", level:"caution" };
   else if (trapProb > 60) psychWarning = { msg:"Risk-to-reward currently weak.", sub:"Multiple trap signals active — reduce position size.", level:"warn" };
@@ -415,12 +451,6 @@ function Spark({ data, up }) {
   const pts = data.map((v,i) => `${(i/(data.length-1))*w},${h - ((v-min)/range)*h}`).join(" ");
   return (
     <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} fill="none" style={{display:"block"}}>
-      <defs>
-        <linearGradient id={`sg-${up}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={up?"#00d4a8":"#ff4757"} stopOpacity="0.3"/>
-          <stop offset="100%" stopColor={up?"#00d4a8":"#ff4757"} stopOpacity="0"/>
-        </linearGradient>
-      </defs>
       <polyline points={pts} stroke={up?"#00d4a8":"#ff4757"} strokeWidth="1.5" fill="none" strokeLinejoin="round" strokeLinecap="round"/>
     </svg>
   );
@@ -563,7 +593,7 @@ function TVChart({ market, candles, onPriceUpdate, dna, prediction }) {
     };
   }, [market.id]);
 
-  // Live tick
+  // Live tick — PATCH: use faster 750ms tick but throttle state updates
   useEffect(() => {
     if (!candleRef.current || !candles.length) return;
     const last = {...candles[candles.length-1]};
@@ -696,7 +726,6 @@ function TVChart({ market, candles, onPriceUpdate, dna, prediction }) {
 
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100%",background:BG,border:`1px solid ${BORDER}`}}>
-      {/* Chart toolbar */}
       <div style={{display:"flex",alignItems:"center",gap:5,padding:"0 10px",height:34,borderBottom:`1px solid ${BORDER}`,background:"#161b22",flexShrink:0,flexWrap:"wrap"}}>
         {[
           {key:"ema20",label:"EMA20",color:"#1f6feb",val:showEMA20,set:setShowEMA20},
@@ -725,9 +754,7 @@ function TVChart({ market, candles, onPriceUpdate, dna, prediction }) {
           <button onClick={()=>chartRef.current?.timeScale().scrollToRealTime()} style={{width:24,height:24,display:"flex",alignItems:"center",justifyContent:"center",background:"transparent",border:`1px solid ${BORDER}`,color:"#8b949e",borderRadius:3,cursor:"pointer",fontSize:10}}>→|</button>
         </div>
       </div>
-      {/* Chart body */}
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
-        {/* Draw sidebar */}
         <div style={{width:32,background:"#161b22",borderRight:`1px solid ${BORDER}`,display:"flex",flexDirection:"column",alignItems:"center",padding:"5px 0",gap:2,flexShrink:0}}>
           {DRAW_TOOLS.map((t,i) => (
             <div key={t.id}>
@@ -739,7 +766,6 @@ function TVChart({ market, candles, onPriceUpdate, dna, prediction }) {
             </div>
           ))}
         </div>
-        {/* Chart + RSI stack */}
         <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",position:"relative"}}>
           {aiBOSLabels.length>0 && (
             <div style={{position:"absolute",top:8,right:8,zIndex:10,display:"flex",flexDirection:"column",gap:2,pointerEvents:"none"}}>
@@ -770,12 +796,18 @@ function TVChart({ market, candles, onPriceUpdate, dna, prediction }) {
 }
 
 /* ═══════════════════════════════════════════════════
-   MAIN APP — PULSETRADE AI™
+   MAIN APP — PULSETRADE AI™ v3.1
 ═══════════════════════════════════════════════════ */
 export default function PulseTradeAI() {
   const [market,      setMarket]      = useState(MARKETS[0]);
   const [candles,     setCandles]     = useState(() => generateOHLCV(MARKETS[0].base));
   const [news,        setNews]        = useState([]);
+
+  /* PATCH 1: Per-market DNA cache — prevents flicker on market switch */
+  const dnaCache = useRef({});
+  const prevSignalRef = useRef(null);
+  const [signalChanged, setSignalChanged] = useState(null);
+
   const [dna,         setDna]         = useState(null);
   const [prediction,  setPrediction]  = useState(null);
   const [loading,     setLoading]     = useState(false);
@@ -783,16 +815,32 @@ export default function PulseTradeAI() {
   const [livePrice,   setLivePrice]   = useState(MARKETS[0].base);
   const [priceChange, setPriceChange] = useState(0);
   const [activeIv,    setActiveIv]    = useState("5m");
-  const [tab,         setTab]         = useState("intelligence");
+
+  /* PATCH 12: Default to chart tab */
+  const [tab,         setTab]         = useState("chart");
+
+  /* PATCH 5: Beginner/Advanced/Pro mode state */
+  const [mode,        setMode]        = useState("Advanced");
+
   const [marketPrices,setMarketPrices]= useState(() => Object.fromEntries(MARKETS.map(m=>[m.id,m.base])));
   const [sparks]     = useState(() => MARKETS.map(m => Array.from({length:24},()=>m.base*(0.95+Math.random()*0.1))));
   const [signalFlash, setSignalFlash] = useState(false);
   const [analyzing,  setAnalyzing]   = useState(true);
 
-  // Load market intelligence on selection
+  /* PATCH 2: Use cache when switching markets */
   useEffect(() => { (async () => {
-    setAnalyzing(true);
-    setDna(null); setDeepAnalysis("");
+    setDeepAnalysis("");
+
+    // Serve cached DNA instantly while fresh data loads
+    if (dnaCache.current[market.id]) {
+      setDna(dnaCache.current[market.id].dna);
+      setPrediction(dnaCache.current[market.id].prediction);
+      setAnalyzing(false);
+    } else {
+      setAnalyzing(true);
+      setDna(null);
+    }
+
     const c = generateOHLCV(market.base);
     setCandles(c);
     const last = c[c.length-1].close;
@@ -806,6 +854,11 @@ export default function PulseTradeAI() {
     setDna(marketDNA);
     const pred = generatePrediction(c, marketDNA);
     setPrediction(pred);
+
+    /* PATCH 2: Store in cache */
+    dnaCache.current[market.id] = { dna: marketDNA, prediction: pred };
+    prevSignalRef.current = marketDNA.signal;
+
     setSignalFlash(true);
     setTimeout(() => setSignalFlash(false), 2000);
     setAnalyzing(false);
@@ -816,7 +869,35 @@ export default function PulseTradeAI() {
     setCandles(c);
   }, [activeIv]);
 
+  /* PATCH 3: Live DNA refresh every 4 seconds — signals stay current */
+  useEffect(() => {
+    if (!candles.length || !news.length) return;
+    const interval = setInterval(() => {
+      const swings = detectSwingPoints(candles);
+      const bos = detectBOSCHOCH(candles, swings);
+      const freshDNA = computeMarketDNA(candles, news, bos);
+      const freshPred = generatePrediction(candles, freshDNA);
+
+      /* PATCH 13: Detect signal changes and alert user */
+      if (prevSignalRef.current && prevSignalRef.current !== freshDNA.signal) {
+        setSignalChanged({ from: prevSignalRef.current, to: freshDNA.signal, market: market.id });
+        setTimeout(() => setSignalChanged(null), 4000);
+      }
+      prevSignalRef.current = freshDNA.signal;
+
+      setDna(freshDNA);
+      setPrediction(freshPred);
+      dnaCache.current[market.id] = { dna: freshDNA, prediction: freshPred };
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [market.id, candles, news]);
+
+  /* PATCH 11: Throttled price update — max 2x/sec to prevent lag */
+  const lastPriceRef = useRef(0);
   const handlePriceUpdate = useCallback((p) => {
+    const now = Date.now();
+    if (now - lastPriceRef.current < 500) return;
+    lastPriceRef.current = now;
     setLivePrice(p);
     setPriceChange(parseFloat(((p-market.base)/market.base*100).toFixed(2)));
     setMarketPrices(prev => ({...prev, [market.id]:p}));
@@ -873,8 +954,14 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
 
   const signalGlow = dna?.signalColor ? `0 0 20px ${dna.signalColor}55` : "none";
 
+  /* Helper: compute danger score (used in multiple places) */
+  const dangerScore = dna ? Math.round(
+    dna.trapProb * 0.35 + dna.exitRisk * 0.30 + dna.reversalProb * 0.20 + (100 - dna.trendStrength) * 0.15
+  ) : 0;
+  const dangerColor = dangerScore > 65 ? C.red : dangerScore > 40 ? C.amber : C.green;
+
   return (
-    <div style={{margin:0,padding:0,height:"100vh",background:C.bg,color:C.text,display:"flex",flexDirection:"column",fontFamily:"'JetBrains Mono',monospace",overflow:"hidden"}}>
+    <div style={{margin:0,padding:0,height:"100vh",background:C.bg,color:C.text,display:"flex",flexDirection:"column",fontFamily:"'JetBrains Mono',monospace",overflow:"hidden",position:"relative"}}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
         *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
@@ -883,14 +970,16 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
         button{font-family:'JetBrains Mono',monospace;cursor:pointer;}
         @keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
         @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-        @keyframes scanline{0%{transform:translateY(-100%)}100%{transform:translateY(100vh)}}
         @keyframes signalPulse{0%,100%{box-shadow:0 0 0 0 currentColor}50%{box-shadow:0 0 0 8px transparent}}
         @keyframes glow{0%,100%{opacity:0.6}50%{opacity:1}}
         @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
         @keyframes barGrow{from{width:0}to{width:var(--w)}}
+        @keyframes priceFlash{0%{opacity:1}30%{opacity:0.3}100%{opacity:1}}
+        @keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
         .blink{animation:blink 2s infinite}
         .fadein{animation:fadeUp .4s ease}
         .glow{animation:glow 2s ease infinite}
+        .price-live{animation:priceFlash .4s ease}
         .mkt-row{display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;border-left:2px solid transparent;transition:all .12s;border-bottom:1px solid transparent;}
         .mkt-row:hover{background:#161b22;border-bottom-color:#21262d;}
         .mkt-row.active{border-left-color:#1f6feb;background:#0f1923;}
@@ -914,6 +1003,8 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
         .news-row{display:flex;gap:8px;padding:9px 0;border-bottom:1px solid #161b22;cursor:pointer;transition:opacity .15s;}
         .news-row:last-child{border:none}
         .news-row:hover{opacity:.75}
+        .signal-alert{animation:slideDown .3s ease;}
+        .mode-btn{padding:3px 9px;border-radius:3px;border:none;font-size:8px;font-weight:700;letter-spacing:.8px;cursor:pointer;font-family:inherit;transition:all .15s;}
       `}</style>
 
       {/* ══ TOPBAR ══ */}
@@ -933,12 +1024,20 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
         {/* Active market info */}
         <div style={{display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontSize:12,fontWeight:700,color:"#e6edf3",letterSpacing:.5}}>{market.icon} {market.id}</span>
-          <span style={{fontSize:13,fontWeight:700,color:up?C.green:C.red,textShadow:up?"0 0 10px rgba(0,212,168,0.6)":"0 0 10px rgba(255,71,87,0.6)"}}>{fmt(livePrice,market)}</span>
+          {/* PATCH 10: price flash animation on update */}
+          <span key={Math.round(livePrice*10000)} className="price-live" style={{fontSize:13,fontWeight:700,color:up?C.green:C.red,textShadow:up?"0 0 10px rgba(0,212,168,0.6)":"0 0 10px rgba(255,71,87,0.6)"}}>{fmt(livePrice,market)}</span>
           <span style={{fontSize:9,padding:"2px 7px",borderRadius:3,background:up?C.green+"18":C.red+"18",color:up?C.green:C.red,fontWeight:700}}>{up?"+":""}{priceChange}%</span>
           {dna && (
             <div style={{display:"flex",alignItems:"center",gap:5,background:dna.signalBg,border:`1px solid ${dna.signalColor}44`,borderRadius:4,padding:"3px 10px",boxShadow:signalFlash?signalGlow:"none",transition:"box-shadow .5s"}}>
               <span style={{fontSize:11,fontWeight:900,color:dna.signalColor,letterSpacing:2}}>{dna.signal}</span>
               <span style={{fontSize:8,color:dna.signalColor+"88"}}>/ {dna.confidence}%</span>
+            </div>
+          )}
+          {/* PATCH: Danger Score in topbar */}
+          {dna && !analyzing && (
+            <div style={{display:"flex",alignItems:"center",gap:4,background:dangerColor+"12",border:`1px solid ${dangerColor}33`,borderRadius:4,padding:"3px 8px"}}>
+              <span style={{fontSize:7,color:dangerColor,letterSpacing:1}}>DANGER</span>
+              <span style={{fontSize:11,fontWeight:700,color:dangerColor}}>{dangerScore}</span>
             </div>
           )}
         </div>
@@ -952,20 +1051,44 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
           ))}
         </div>
 
-        {/* PulseScore™ in topbar */}
-        {dna && (
-          <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10}}>
+        {/* Right side: Mode toggle + PulseScore */}
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10}}>
+
+          {/* PATCH 5: Mode toggle */}
+          <div style={{display:"flex",gap:1,background:"#0d1117",borderRadius:4,padding:2,border:`1px solid ${C.border}`}}>
+            {MODES.map(m => (
+              <button key={m} className="mode-btn" onClick={() => setMode(m)} style={{
+                background: mode===m ? "#1f6feb" : "transparent",
+                color: mode===m ? "#fff" : "#4a5568",
+              }}>{m.toUpperCase()}</button>
+            ))}
+          </div>
+
+          {dna && (
             <div style={{textAlign:"right"}}>
               <div style={{fontSize:7,color:"#4a5568",letterSpacing:2}}>PULSESCORE™</div>
               <div style={{fontSize:16,fontWeight:700,color:dna.pulseScore>=62?C.green:dna.pulseScore<=38?C.red:C.amber,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{dna.pulseScore}<span style={{fontSize:9,color:"#4a5568"}}>/100</span></div>
             </div>
-            <div style={{display:"flex",alignItems:"center",gap:5}}>
-              <div className="blink" style={{width:6,height:6,borderRadius:"50%",background:C.green}}/>
-              <span style={{fontSize:8,color:C.green,letterSpacing:2}}>LIVE</span>
-            </div>
+          )}
+          <div style={{display:"flex",alignItems:"center",gap:5}}>
+            <div className="blink" style={{width:6,height:6,borderRadius:"50%",background:C.green}}/>
+            <span style={{fontSize:8,color:C.green,letterSpacing:2}}>LIVE</span>
           </div>
-        )}
+        </div>
       </div>
+
+      {/* PATCH 13: Signal change alert banner */}
+      {signalChanged && (
+        <div className="signal-alert" style={{
+          position:"absolute",top:48,left:"50%",transform:"translateX(-50%)",
+          zIndex:999,
+          background: signalChanged.to==="BUY" ? "rgba(0,212,168,0.95)" : signalChanged.to==="SELL" ? "rgba(255,71,87,0.95)" : "rgba(255,214,0,0.95)",
+          color:"#0d1117",padding:"8px 20px",borderRadius:6,fontSize:11,fontWeight:700,
+          letterSpacing:1.5,boxShadow:"0 4px 24px rgba(0,0,0,0.5)",pointerEvents:"none",
+        }}>
+          ⚡ SIGNAL CHANGED: {signalChanged.from} → {signalChanged.to} · {signalChanged.market}
+        </div>
+      )}
 
       {/* ══ BODY ══ */}
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
@@ -994,7 +1117,7 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
             })}
           </div>
 
-          {/* AI Signal Button for selected market */}
+          {/* AI Signal panel */}
           <div style={{padding:"10px 10px 8px",borderTop:`1px solid ${C.border}`,flexShrink:0,display:"flex",flexDirection:"column",gap:7}}>
             {analyzing ? (
               <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px 0"}}>
@@ -1003,19 +1126,29 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
               </div>
             ) : dna ? (
               <>
-                {/* Primary BUY/SELL/WAIT button */}
-                <button className="signal-btn market-signal-flash" style={{
-                  background: dna.signalBg,
-                  borderColor: dna.signalColor,
-                  color: dna.signalColor,
-                  boxShadow: `0 0 20px ${dna.signalColor}33, inset 0 1px 0 ${dna.signalColor}22`,
-                }}>
-                  {dna.signal === "BUY"  ? "▲ BUY"  :
-                   dna.signal === "SELL" ? "▼ SELL" : "⏸ WAIT"}
-                  <div style={{fontSize:8,fontWeight:400,letterSpacing:1,opacity:.7,marginTop:2}}>
-                    {dna.signal==="BUY"?"Entry opportunity detected":dna.signal==="SELL"?"Exit / short opportunity":"No clear edge — stand by"}
-                  </div>
-                </button>
+                {/* PATCH 6: Beginner vs Advanced signal button */}
+                {mode === "Beginner" ? (() => {
+                  const bt = getBeginnerSignalText(dna.signal);
+                  return (
+                    <div style={{background:dna.signalBg,border:`2px solid ${dna.signalColor}`,borderRadius:5,padding:"10px 10px",textAlign:"center"}}>
+                      <div style={{fontSize:11,fontWeight:900,color:dna.signalColor,marginBottom:4}}>{bt.action}</div>
+                      <div style={{fontSize:8,color:"#8b949e",lineHeight:1.5}}>{bt.sub}</div>
+                    </div>
+                  );
+                })() : (
+                  <button className="signal-btn market-signal-flash" style={{
+                    background: dna.signalBg,
+                    borderColor: dna.signalColor,
+                    color: dna.signalColor,
+                    boxShadow: `0 0 20px ${dna.signalColor}33, inset 0 1px 0 ${dna.signalColor}22`,
+                  }}>
+                    {dna.signal === "BUY"  ? "▲ BUY"  :
+                     dna.signal === "SELL" ? "▼ SELL" : "⏸ WAIT"}
+                    <div style={{fontSize:8,fontWeight:400,letterSpacing:1,opacity:.7,marginTop:2}}>
+                      {dna.signal==="BUY"?"Entry opportunity detected":dna.signal==="SELL"?"Exit / short opportunity":"No clear edge — stand by"}
+                    </div>
+                  </button>
+                )}
 
                 {/* R/R + Target */}
                 <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4}}>
@@ -1047,8 +1180,12 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                   <div style={{background:"rgba(255,71,87,0.06)",border:"1px solid #ff475740",borderRadius:4,padding:"5px 8px",display:"flex",gap:6,alignItems:"center"}}>
                     <span className="blink" style={{fontSize:8,color:C.red}}>⚠</span>
                     <div>
-                      <div style={{fontSize:8,color:C.red,fontWeight:700,letterSpacing:.5}}>EXIT RISK: {dna.exitRisk}%</div>
-                      <div style={{fontSize:7,color:"#4a5568",marginTop:1}}>Smart Exit Radar™ active</div>
+                      <div style={{fontSize:8,color:C.red,fontWeight:700,letterSpacing:.5}}>
+                        {mode==="Beginner" ? "Exit Risk Active" : `EXIT RISK: ${dna.exitRisk}%`}
+                      </div>
+                      <div style={{fontSize:7,color:"#4a5568",marginTop:1}}>
+                        {mode==="Beginner" ? "Consider reducing exposure" : "Smart Exit Radar™ active"}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1058,8 +1195,12 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                   <div style={{background:"rgba(255,214,0,0.05)",border:"1px solid #ffd60040",borderRadius:4,padding:"5px 8px",display:"flex",gap:6,alignItems:"center"}}>
                     <span className="blink" style={{fontSize:8,color:C.amber}}>◈</span>
                     <div>
-                      <div style={{fontSize:8,color:C.amber,fontWeight:700,letterSpacing:.5}}>TRAP: {dna.trapProb}%</div>
-                      <div style={{fontSize:7,color:"#4a5568",marginTop:1}}>TrapSense AI™ alert</div>
+                      <div style={{fontSize:8,color:C.amber,fontWeight:700,letterSpacing:.5}}>
+                        {mode==="Beginner" ? "⚠ Trap Warning" : `TRAP: ${dna.trapProb}%`}
+                      </div>
+                      <div style={{fontSize:7,color:"#4a5568",marginTop:1}}>
+                        {mode==="Beginner" ? "Risky — market may reverse" : "TrapSense AI™ alert"}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1088,7 +1229,6 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
           {/* ──── CHART TAB ──── */}
           {tab==="chart" && (
             <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-              {/* Deep analysis overlay */}
               {deepAnalysis && (
                 <div className="fadein" style={{background:"#0d1117",borderBottom:`1px solid #1f6feb18`,padding:"8px 14px",flexShrink:0,maxHeight:130,overflowY:"auto"}}>
                   <div style={{fontSize:7,color:C.accent,letterSpacing:2.5,marginBottom:6}}>● DEEP ANALYSIS · {market.id}</div>
@@ -1100,7 +1240,6 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                   ))}
                 </div>
               )}
-              {/* Market DNA™ quick bar */}
               {dna && !analyzing && (
                 <div style={{background:"#0d1117",borderBottom:`1px solid #161b22`,padding:"4px 14px",flexShrink:0,display:"flex",gap:14,alignItems:"center"}}>
                   <span style={{fontSize:7,color:"#4a5568",letterSpacing:2,flexShrink:0}}>MARKET DNA™</span>
@@ -1111,6 +1250,7 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                     {l:"TRAP",v:`${dna.trapProb}%`,c:dna.trapProb>55?C.amber:C.muted},
                     {l:"EXIT RISK",v:`${dna.exitRisk}%`,c:dna.exitRisk>60?C.red:C.muted},
                     {l:"SMART $",v:dna.smBias>20?"BUY":dna.smBias<-20?"SELL":"NEUT",c:dna.smBias>20?C.green:dna.smBias<-20?C.red:C.muted},
+                    {l:"DANGER",v:`${dangerScore}/100`,c:dangerColor},
                   ].map((x,i) => (
                     <div key={i} style={{display:"flex",flexDirection:"column",gap:1}}>
                       <span style={{fontSize:6,color:"#4a5568",letterSpacing:1.5}}>{x.l}</span>
@@ -1134,6 +1274,103 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
           {tab==="intelligence" && dna && (
             <div className="fadein" style={{flex:1,overflowY:"auto",padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
 
+              {/* PATCH 15: Beginner mode header */}
+              {mode === "Beginner" && (
+                <div style={{background:"rgba(31,111,235,0.06)",border:"1px solid #1f6feb33",borderRadius:5,padding:"8px 12px",display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:12}}>👋</span>
+                  <div>
+                    <div style={{fontSize:9,color:"#1f6feb",fontWeight:700,letterSpacing:.5}}>BEGINNER MODE ACTIVE</div>
+                    <div style={{fontSize:8,color:"#4a5568"}}>All signals shown in plain English. Switch to Advanced for technical details.</div>
+                  </div>
+                </div>
+              )}
+
+              {/* PATCH 8: Market Danger Score */}
+              {(() => {
+                const dangerLabel = dangerScore > 65 ? "HIGH DANGER" : dangerScore > 40 ? "ELEVATED RISK" : "CONDITIONS SAFE";
+                const dangerDesc = mode === "Beginner"
+                  ? dangerScore > 65
+                    ? "⚠️ This market is very risky right now. Multiple warning signals are active. Avoid large trades or new entries."
+                    : dangerScore > 40
+                    ? "⚡ There are some risk signals. Trade smaller than normal and use tight stop-losses."
+                    : "✅ The market looks reasonably safe to trade. Normal risk management still applies."
+                  : `Composite score from trap probability (${dna.trapProb}%), exit risk (${dna.exitRisk}%), reversal risk (${dna.reversalProb}%), and trend health.`;
+                return (
+                  <div style={{background:C.panel,border:`1px solid ${dangerColor}33`,borderRadius:6,padding:"14px",borderLeft:`3px solid ${dangerColor}`}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                      <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5}}>MARKET DANGER SCORE™</div>
+                      <div style={{fontSize:7,color:dangerColor,letterSpacing:1,fontWeight:700,background:dangerColor+"15",padding:"2px 8px",borderRadius:3}}>{dangerLabel}</div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:8}}>
+                      <div style={{textAlign:"center",minWidth:60}}>
+                        <div style={{fontSize:36,fontWeight:700,color:dangerColor,lineHeight:1}}>{dangerScore}</div>
+                        <div style={{fontSize:7,color:"#4a5568",letterSpacing:1}}>/100</div>
+                      </div>
+                      <div style={{flex:1}}>
+                        <div className="metric-bar" style={{height:8,marginBottom:5}}>
+                          <div className="metric-bar-fill" style={{width:`${dangerScore}%`,background:dangerColor}}/>
+                        </div>
+                        <div style={{fontSize:8,color:"#8b949e",lineHeight:1.6}}>{dangerDesc}</div>
+                      </div>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:5}}>
+                      {[
+                        {l:"Trap Risk",v:dna.trapProb+"%"},
+                        {l:"Exit Risk",v:dna.exitRisk+"%"},
+                        {l:"Reversal Risk",v:dna.reversalProb+"%"},
+                        {l:"Trend Health",v:dna.trendStrength.toFixed(0)+"%"},
+                      ].map((x,i) => (
+                        <div key={i} style={{background:"#0d1117",borderRadius:3,padding:"5px 8px"}}>
+                          <div style={{fontSize:7,color:"#4a5568",marginBottom:2}}>{x.l}</div>
+                          <div style={{fontSize:10,color:C.text,fontWeight:700}}>{x.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* PATCH 9: Action Guidance Card */}
+              {(() => {
+                let action, actionColor, actionIcon, actionDesc;
+                if (dna.pulseScore >= 70 && dangerScore < 35) {
+                  action = "STRONG OPPORTUNITY"; actionColor = C.green; actionIcon = "🚀";
+                  actionDesc = mode==="Beginner"
+                    ? "The AI sees a strong setup. If you were planning to trade, conditions look favorable now. Always use a stop-loss."
+                    : "High-confluence setup. Trend, momentum, volume, and structure aligned. Quality entry.";
+                } else if (dna.pulseScore >= 58 && dangerScore < 55) {
+                  action = "ENTER CAREFULLY"; actionColor = "#00b4d8"; actionIcon = "⚡";
+                  actionDesc = mode==="Beginner"
+                    ? "There's an opportunity, but it's not perfect. If you enter, use a small position and set a stop-loss."
+                    : "Moderate setup with some conflicting signals. Reduce position size by 30-50%.";
+                } else if (dna.exitRisk > 65) {
+                  action = "EXIT POSITION"; actionColor = C.red; actionIcon = "🚨";
+                  actionDesc = mode==="Beginner"
+                    ? "If you're currently in a trade, consider reducing or closing it. Exit signals are active right now."
+                    : "Smart Exit Radar™ active. Multiple momentum exhaustion signals confirmed. Protect profits.";
+                } else if (dangerScore > 60) {
+                  action = "HIGH RISK — AVOID"; actionColor = C.amber; actionIcon = "⚠️";
+                  actionDesc = mode==="Beginner"
+                    ? "Too risky to trade right now. Wait for conditions to improve before entering any position."
+                    : "TrapSense AI™ detecting elevated manipulation probability. Stand aside.";
+                } else {
+                  action = "WAIT FOR SETUP"; actionColor = "#8b949e"; actionIcon = "⏸";
+                  actionDesc = mode==="Beginner"
+                    ? "No clear edge right now. Waiting is a valid strategy — the best traders know when NOT to trade."
+                    : "Insufficient confluence. No high-probability setup confirmed at this time.";
+                }
+                return (
+                  <div style={{background:`${actionColor}08`,border:`1px solid ${actionColor}44`,borderRadius:6,padding:"12px 14px",borderLeft:`3px solid ${actionColor}`}}>
+                    <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:6}}>AI ACTION GUIDANCE™</div>
+                    <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+                      <span style={{fontSize:18}}>{actionIcon}</span>
+                      <span style={{fontSize:12,fontWeight:900,color:actionColor,letterSpacing:1.5}}>{action}</span>
+                    </div>
+                    <div style={{fontSize:9,color:"#8b949e",lineHeight:1.7}}>{actionDesc}</div>
+                  </div>
+                );
+              })()}
+
               {/* Psychology Warning Banner */}
               {dna.psychWarning && (
                 <div style={{background:dna.psychWarning.level==="danger"?"rgba(255,71,87,0.07)":dna.psychWarning.level==="warn"?"rgba(255,214,0,0.06)":"rgba(31,111,235,0.06)",border:`1px solid ${dna.psychWarning.level==="danger"?C.red:dna.psychWarning.level==="warn"?C.amber:C.accent}44`,borderRadius:5,padding:"10px 12px",borderLeft:`3px solid ${dna.psychWarning.level==="danger"?C.red:dna.psychWarning.level==="warn"?C.amber:C.accent}`}}>
@@ -1149,7 +1386,6 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
               <div style={{background:C.panel,border:`1px solid ${C.border}`,borderRadius:6,padding:"12px 14px"}}>
                 <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:10}}>PULSESCORE™ · MARKET HEALTH</div>
                 <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
-                  {/* Main pulse score */}
                   <div style={{textAlign:"center",minWidth:70}}>
                     <div style={{fontSize:36,fontWeight:700,color:dna.pulseScore>=62?C.green:dna.pulseScore<=38?C.red:C.amber,lineHeight:1,textShadow:`0 0 20px ${dna.pulseScore>=62?C.green:dna.pulseScore<=38?C.red:C.amber}55`}}>{dna.pulseScore}</div>
                     <div style={{fontSize:7,color:"#4a5568",letterSpacing:1.5,marginTop:2}}>/ 100</div>
@@ -1158,7 +1394,6 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                     </div>
                   </div>
                   <div style={{width:1,height:50,background:C.border}}/>
-                  {/* Gauge row */}
                   <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
                     <Gauge value={dna.trendStrength.toFixed(0)} color={dna.trendStrength>60?C.green:C.amber} label="TREND STR" sublabel="strength"/>
                     <Gauge value={dna.reversalProb} color={dna.reversalProb>60?C.red:C.amber} label="REVERSAL" sublabel="probability"/>
@@ -1167,7 +1402,6 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                     <Gauge value={dna.confidence} color={C.accent} label="CONFIDENCE" sublabel="signal"/>
                   </div>
                 </div>
-                {/* Full metric bars */}
                 <div style={{marginTop:12,display:"flex",flexDirection:"column",gap:7}}>
                   {[
                     {l:"Market Bias",v:(dna.marketBias+100)/2,c:dna.marketBias>0?C.green:C.red,sub:dna.marketBias>20?"Bullish":dna.marketBias<-20?"Bearish":"Neutral"},
@@ -1193,20 +1427,27 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                   <div style={{fontSize:10,fontWeight:700,color:dna.exitRisk>60?C.red:dna.exitRisk>40?C.amber:C.muted}}>Risk: {dna.exitRisk}%</div>
                 </div>
                 {dna.exitWarnings.length===0 ? (
-                  <div style={{fontSize:9,color:"#4a5568",fontStyle:"italic"}}>No exit signals active. Conditions stable.</div>
+                  <div style={{fontSize:9,color:"#4a5568",fontStyle:"italic"}}>
+                    {mode==="Beginner" ? "✅ No exit alerts right now. Your trade can continue normally." : "No exit signals active. Conditions stable."}
+                  </div>
                 ) : (
-                  dna.exitWarnings.map((w,i) => (
-                    <div key={i} className="warn-card" style={{background:w.severity==="HIGH"?"rgba(255,71,87,0.06)":"rgba(255,214,0,0.05)",borderColor:w.severity==="HIGH"?C.red:C.amber}}>
-                      <div style={{fontSize:8,color:w.severity==="HIGH"?C.red:C.amber,fontWeight:700,letterSpacing:.8,marginBottom:3}}>{w.type}</div>
-                      <div style={{fontSize:9,color:"#8b949e",lineHeight:1.5}}>{w.desc}</div>
-                    </div>
-                  ))
+                  dna.exitWarnings.map((w,i) => {
+                    const bt = mode === "Beginner" && BEGINNER_TRANSLATIONS[w.type];
+                    return (
+                      <div key={i} className="warn-card" style={{background:w.severity==="HIGH"?"rgba(255,71,87,0.06)":"rgba(255,214,0,0.05)",borderColor:w.severity==="HIGH"?C.red:C.amber}}>
+                        <div style={{fontSize:8,color:w.severity==="HIGH"?C.red:C.amber,fontWeight:700,letterSpacing:.8,marginBottom:3}}>{bt ? bt.title : w.type}</div>
+                        <div style={{fontSize:9,color:"#8b949e",lineHeight:1.5}}>{bt ? bt.desc : w.desc}</div>
+                      </div>
+                    );
+                  })
                 )}
               </div>
 
               {/* Scenario Engine */}
               <div style={{background:C.panel,border:`1px solid ${C.border}`,borderRadius:6,padding:"12px 14px"}}>
-                <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:10}}>SCENARIO ENGINE · {market.id}</div>
+                <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:10}}>
+                  {mode==="Beginner" ? "WHAT COULD HAPPEN NEXT?" : `SCENARIO ENGINE · ${market.id}`}
+                </div>
                 {dna.scenarios.map((s,i) => (
                   <div key={i} style={{marginBottom:i<dna.scenarios.length-1?12:0}}>
                     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:5}}>
@@ -1220,8 +1461,12 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                     <div className="metric-bar" style={{marginBottom:5}}>
                       <div className="metric-bar-fill" style={{width:`${s.prob}%`,background:s.color,opacity:.75}}/>
                     </div>
-                    <div style={{fontSize:8,color:"#4a5568",marginBottom:2}}>✓ Condition: {s.condition}</div>
-                    <div style={{fontSize:8,color:"#4a5568"}}>✗ Invalidated: {s.invalidate}</div>
+                    {mode !== "Beginner" && (
+                      <>
+                        <div style={{fontSize:8,color:"#4a5568",marginBottom:2}}>✓ Condition: {s.condition}</div>
+                        <div style={{fontSize:8,color:"#4a5568"}}>✗ Invalidated: {s.invalidate}</div>
+                      </>
+                    )}
                     {i<dna.scenarios.length-1 && <div style={{height:1,background:C.border,marginTop:10}}/>}
                   </div>
                 ))}
@@ -1230,7 +1475,8 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
               {/* Why AI Thinks This */}
               <div style={{background:"#0d1117",border:`1px solid #1f6feb22`,borderRadius:6,padding:"12px 14px",borderLeft:`2px solid ${C.accent}`}}>
                 <div style={{fontSize:7,color:C.accent,letterSpacing:2.5,marginBottom:10,display:"flex",alignItems:"center",gap:5}}>
-                  <span className="blink">●</span> WHY AI THINKS THIS™
+                  <span className="blink">●</span>
+                  {mode==="Beginner" ? "WHY THE AI THINKS THIS" : "WHY AI THINKS THIS™"}
                 </div>
                 {dna.aiReasons.map((r,i) => (
                   <div key={i} style={{display:"flex",gap:10,marginBottom:9,alignItems:"flex-start",paddingBottom:9,borderBottom:i<dna.aiReasons.length-1?`1px solid ${C.border}`:"none"}}>
@@ -1250,45 +1496,58 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
           {tab==="trapsense" && dna && (
             <div className="fadein" style={{flex:1,overflowY:"auto",padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
 
-              {/* TrapSense™ header */}
               <div style={{background:`linear-gradient(135deg, rgba(255,214,0,0.06), rgba(255,71,87,0.04))`,border:`1px solid ${C.amber}33`,borderRadius:6,padding:"14px",textAlign:"center"}}>
-                <div style={{fontSize:7,color:C.amber,letterSpacing:3,marginBottom:6}}>TRAPSENSE AI™ · PROPRIETARY ENGINE</div>
+                <div style={{fontSize:7,color:C.amber,letterSpacing:3,marginBottom:6}}>
+                  {mode==="Beginner" ? "HOW RISKY IS THIS MARKET?" : "TRAPSENSE AI™ · PROPRIETARY ENGINE"}
+                </div>
                 <div style={{fontSize:42,fontWeight:700,color:dna.trapProb>65?C.red:dna.trapProb>40?C.amber:C.green,lineHeight:1,textShadow:`0 0 30px ${dna.trapProb>65?C.red:dna.trapProb>40?C.amber:C.green}55`}}>
                   {dna.trapProb}<span style={{fontSize:16,color:"#4a5568"}}>%</span>
                 </div>
                 <div style={{fontSize:9,color:dna.trapProb>65?C.red:dna.trapProb>40?C.amber:C.green,fontWeight:700,letterSpacing:1.5,marginTop:4}}>
                   {dna.trapProb>65?"HIGH TRAP PROBABILITY":dna.trapProb>40?"MODERATE TRAP RISK":"LOW TRAP PROBABILITY"}
                 </div>
-                <div style={{fontSize:8,color:"#4a5568",marginTop:4}}>Probability that this market is setting a trap for retail traders</div>
+                <div style={{fontSize:8,color:"#4a5568",marginTop:4}}>
+                  {mode==="Beginner"
+                    ? "Chance that this market is about to trick and trap retail traders"
+                    : "Probability that this market is setting a trap for retail traders"}
+                </div>
               </div>
 
-              {/* Active trap warnings */}
               <div style={{background:C.panel,border:`1px solid ${C.border}`,borderRadius:6,padding:"12px 14px"}}>
-                <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:10}}>ACTIVE TRAP SIGNALS</div>
+                <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:10}}>
+                  {mode==="Beginner" ? "ACTIVE WARNINGS" : "ACTIVE TRAP SIGNALS"}
+                </div>
                 {dna.trapWarnings.length===0 ? (
                   <div style={{fontSize:9,color:"#4a5568",fontStyle:"italic",textAlign:"center",padding:"16px 0"}}>
-                    ◎ No active trap signals detected.<br/>
-                    <span style={{fontSize:8,color:"#374151"}}>Market appears to be moving with genuine participation.</span>
+                    {mode==="Beginner"
+                      ? "✅ No trap warnings active right now. The market looks genuine."
+                      : "◎ No active trap signals detected. Market appears to be moving with genuine participation."}
                   </div>
                 ) : (
-                  dna.trapWarnings.map((w,i) => (
-                    <div key={i} style={{background:w.severity==="HIGH"?"rgba(255,71,87,0.07)":"rgba(255,214,0,0.05)",border:`1px solid ${w.severity==="HIGH"?C.red:C.amber}40`,borderRadius:4,padding:"10px 12px",marginBottom:i<dna.trapWarnings.length-1?8:0,borderLeft:`3px solid ${w.severity==="HIGH"?C.red:C.amber}`}}>
-                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
-                        <span style={{fontSize:9,color:w.severity==="HIGH"?C.red:C.amber,fontWeight:700,letterSpacing:.8}}>{w.type}</span>
-                        <span style={{fontSize:7,padding:"1px 6px",borderRadius:2,background:w.severity==="HIGH"?C.red+"20":C.amber+"20",color:w.severity==="HIGH"?C.red:C.amber,fontWeight:700}}>{w.severity}</span>
+                  /* PATCH 7: Beginner-translated trap warnings */
+                  dna.trapWarnings.map((w,i) => {
+                    const bt = mode === "Beginner" && BEGINNER_TRANSLATIONS[w.type];
+                    return (
+                      <div key={i} style={{background:w.severity==="HIGH"?"rgba(255,71,87,0.07)":"rgba(255,214,0,0.05)",border:`1px solid ${w.severity==="HIGH"?C.red:C.amber}40`,borderRadius:4,padding:"10px 12px",marginBottom:i<dna.trapWarnings.length-1?8:0,borderLeft:`3px solid ${w.severity==="HIGH"?C.red:C.amber}`}}>
+                        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+                          <span style={{fontSize:9,color:w.severity==="HIGH"?C.red:C.amber,fontWeight:700,letterSpacing:.8}}>{bt ? bt.title : w.type}</span>
+                          <span style={{fontSize:7,padding:"1px 6px",borderRadius:2,background:w.severity==="HIGH"?C.red+"20":C.amber+"20",color:w.severity==="HIGH"?C.red:C.amber,fontWeight:700}}>{w.severity}</span>
+                        </div>
+                        <div style={{fontSize:9,color:"#8b949e",lineHeight:1.6}}>{bt ? bt.desc : w.desc}</div>
                       </div>
-                      <div style={{fontSize:9,color:"#8b949e",lineHeight:1.6}}>{w.desc}</div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
 
-              {/* Smart Exit Radar™ detailed */}
               <div style={{background:C.panel,border:`1px solid ${dna.exitRisk>60?C.red+"44":C.border}`,borderRadius:6,padding:"12px 14px"}}>
-                <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:4}}>SMART EXIT RADAR™ · MOVE-OUT ENGINE</div>
-                <div style={{fontSize:8,color:"#4a5568",marginBottom:10}}>Proactive detection of when to exit or avoid entry.</div>
+                <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:4}}>
+                  {mode==="Beginner" ? "WHEN TO GET OUT" : "SMART EXIT RADAR™ · MOVE-OUT ENGINE"}
+                </div>
+                <div style={{fontSize:8,color:"#4a5568",marginBottom:10}}>
+                  {mode==="Beginner" ? "Warning signs that it's time to exit or avoid entering." : "Proactive detection of when to exit or avoid entry."}
+                </div>
 
-                {/* Exit risk gauge */}
                 <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
                   <div style={{textAlign:"center"}}>
                     <div style={{fontSize:28,fontWeight:700,color:dna.exitRisk>60?C.red:dna.exitRisk>40?C.amber:C.green,lineHeight:1}}>{dna.exitRisk}</div>
@@ -1299,32 +1558,42 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                       <div className="metric-bar-fill" style={{width:`${dna.exitRisk}%`,background:dna.exitRisk>60?C.red:dna.exitRisk>40?C.amber:C.green}}/>
                     </div>
                     <div style={{fontSize:8,color:dna.exitRisk>60?C.red:dna.exitRisk>40?C.amber:C.green,fontWeight:600}}>
-                      {dna.exitRisk>70?"⚠ EXIT OR AVOID ENTRY":dna.exitRisk>55?"Caution — manage risk":"Conditions acceptable"}
+                      {dna.exitRisk>70
+                        ? (mode==="Beginner" ? "⚠ Close or reduce your position now" : "⚠ EXIT OR AVOID ENTRY")
+                        : dna.exitRisk>55
+                        ? (mode==="Beginner" ? "Be careful — risk is building" : "Caution — manage risk")
+                        : (mode==="Beginner" ? "Conditions look okay to hold" : "Conditions acceptable")}
                     </div>
                   </div>
                 </div>
 
                 {dna.exitWarnings.length===0 ? (
-                  <div style={{fontSize:9,color:"#4a5568",textAlign:"center",padding:"8px 0"}}>No exit conditions triggered. Trade may continue.</div>
+                  <div style={{fontSize:9,color:"#4a5568",textAlign:"center",padding:"8px 0"}}>
+                    {mode==="Beginner" ? "No exit warnings right now. Safe to hold." : "No exit conditions triggered. Trade may continue."}
+                  </div>
                 ) : (
-                  dna.exitWarnings.map((w,i) => (
-                    <div key={i} style={{background:w.severity==="HIGH"?"rgba(255,71,87,0.06)":"rgba(255,214,0,0.04)",border:`1px solid ${w.severity==="HIGH"?C.red:C.amber}35`,borderRadius:4,padding:"9px 11px",marginBottom:i<dna.exitWarnings.length-1?7:0,borderLeft:`2px solid ${w.severity==="HIGH"?C.red:C.amber}`}}>
-                      <div style={{fontSize:8,color:w.severity==="HIGH"?C.red:C.amber,fontWeight:700,letterSpacing:.5,marginBottom:3}}>{w.type}</div>
-                      <div style={{fontSize:9,color:"#8b949e",lineHeight:1.5}}>{w.desc}</div>
-                    </div>
-                  ))
+                  dna.exitWarnings.map((w,i) => {
+                    const bt = mode === "Beginner" && BEGINNER_TRANSLATIONS[w.type];
+                    return (
+                      <div key={i} style={{background:w.severity==="HIGH"?"rgba(255,71,87,0.06)":"rgba(255,214,0,0.04)",border:`1px solid ${w.severity==="HIGH"?C.red:C.amber}35`,borderRadius:4,padding:"9px 11px",marginBottom:i<dna.exitWarnings.length-1?7:0,borderLeft:`2px solid ${w.severity==="HIGH"?C.red:C.amber}`}}>
+                        <div style={{fontSize:8,color:w.severity==="HIGH"?C.red:C.amber,fontWeight:700,letterSpacing:.5,marginBottom:3}}>{bt ? bt.title : w.type}</div>
+                        <div style={{fontSize:9,color:"#8b949e",lineHeight:1.5}}>{bt ? bt.desc : w.desc}</div>
+                      </div>
+                    );
+                  })
                 )}
               </div>
 
-              {/* Discipline framework */}
               <div style={{background:"#0d1117",border:`1px solid #1f6feb18`,borderRadius:6,padding:"12px 14px",borderLeft:`2px solid ${C.accent}55`}}>
-                <div style={{fontSize:7,color:C.accent,letterSpacing:2.5,marginBottom:8}}>TRADER DISCIPLINE FRAMEWORK</div>
+                <div style={{fontSize:7,color:C.accent,letterSpacing:2.5,marginBottom:8}}>
+                  {mode==="Beginner" ? "TRADING CHECKLIST" : "TRADER DISCIPLINE FRAMEWORK"}
+                </div>
                 {[
-                  {check: dna.pulseScore >= 60,          label:"Signal edge is clear",         pass:"Entry has quantified edge",    fail:"Low edge — wait for setup"},
-                  {check: dna.trapProb <= 45,             label:"Trap probability acceptable",  pass:"Market participation genuine", fail:"Trap conditions active"},
-                  {check: dna.exitRisk <= 55,             label:"Exit risk manageable",         pass:"Reasonable holding conditions",fail:"Exit risk elevated — caution"},
-                  {check: dna.trendStrength >= 40,        label:"Trend strength sufficient",    pass:"Directional momentum present", fail:"Weak trend — range-bound risk"},
-                  {check: dna.reversalProb <= 50,         label:"Reversal risk low",            pass:"Trend likely to continue",     fail:"Reversal signals building"},
+                  {check: dna.pulseScore >= 60,        label: mode==="Beginner" ? "AI signal is clear" : "Signal edge is clear",           pass: mode==="Beginner" ? "The AI sees a good setup" : "Entry has quantified edge",               fail: mode==="Beginner" ? "No clear setup yet — wait" : "Low edge — wait for setup"},
+                  {check: dna.trapProb <= 45,           label: mode==="Beginner" ? "No major trap risk" : "Trap probability acceptable",     pass: mode==="Beginner" ? "Market seems genuine" : "Market participation genuine",              fail: mode==="Beginner" ? "Trap signals active — be cautious" : "Trap conditions active"},
+                  {check: dna.exitRisk <= 55,           label: mode==="Beginner" ? "Safe to hold/enter" : "Exit risk manageable",           pass: mode==="Beginner" ? "Conditions are okay" : "Reasonable holding conditions",              fail: mode==="Beginner" ? "Risk building — reduce exposure" : "Exit risk elevated — caution"},
+                  {check: dna.trendStrength >= 40,      label: mode==="Beginner" ? "Market has clear direction" : "Trend strength sufficient", pass: mode==="Beginner" ? "Clear trend present" : "Directional momentum present",          fail: mode==="Beginner" ? "No clear direction — choppy market" : "Weak trend — range-bound risk"},
+                  {check: dna.reversalProb <= 50,       label: mode==="Beginner" ? "Reversal risk is low" : "Reversal risk low",           pass: mode==="Beginner" ? "Trend likely to continue" : "Trend likely to continue",              fail: mode==="Beginner" ? "Reversal signals building — be careful" : "Reversal signals building"},
                 ].map((item,i) => (
                   <div key={i} style={{display:"flex",alignItems:"flex-start",gap:8,padding:"6px 0",borderBottom:i<4?`1px solid ${C.border}`:"none"}}>
                     <div style={{width:16,height:16,borderRadius:3,background:item.check?"rgba(0,212,168,0.12)":"rgba(255,71,87,0.1)",border:`1px solid ${item.check?C.green:C.red}44`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1}}>
@@ -1338,7 +1607,9 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                 ))}
                 <div style={{marginTop:10,padding:"8px",background:dna.trapProb<45&&dna.exitRisk<55&&dna.pulseScore>=60?"rgba(0,212,168,0.06)":"rgba(255,71,87,0.06)",borderRadius:4,border:`1px solid ${dna.trapProb<45&&dna.exitRisk<55&&dna.pulseScore>=60?C.green:C.red}35`}}>
                   <div style={{fontSize:9,color:dna.trapProb<45&&dna.exitRisk<55&&dna.pulseScore>=60?C.green:C.red,fontWeight:700}}>
-                    {dna.trapProb<45&&dna.exitRisk<55&&dna.pulseScore>=60?"✓ Conditions align — proceed with standard risk management.":"⚠ Conditions suboptimal — reduce size or wait for better setup."}
+                    {dna.trapProb<45&&dna.exitRisk<55&&dna.pulseScore>=60
+                      ? (mode==="Beginner" ? "✓ All checks passed — conditions look good. Trade with proper sizing." : "✓ Conditions align — proceed with standard risk management.")
+                      : (mode==="Beginner" ? "⚠ Some checks failed — trade smaller or wait for a better setup." : "⚠ Conditions suboptimal — reduce size or wait for better setup.")}
                   </div>
                 </div>
               </div>
@@ -1351,7 +1622,9 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
                 <div>
                   <div style={{fontSize:11,color:"#e6edf3",fontWeight:700}}>{market.id} · News Feed</div>
-                  <div style={{fontSize:8,color:"#4a5568",marginTop:2}}>Sentiment analysis — {market.id} only</div>
+                  <div style={{fontSize:8,color:"#4a5568",marginTop:2}}>
+                    {mode==="Beginner" ? "Latest news that could affect " + market.id : `Sentiment analysis — ${market.id} only`}
+                  </div>
                 </div>
                 <div style={{display:"flex",gap:8,fontSize:9}}>
                   <span style={{color:C.green}}>▲ {news.filter(n=>n.sentiment==="bullish").length} BULL</span>
@@ -1363,12 +1636,17 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                 const impacts = n.sentiment==="bullish"
                   ? ["Price support likely","Momentum boost possible","Watch for follow-through"]
                   : ["Sell pressure may increase","Watch for breakdown","Risk-off sentiment rising"];
+                const beginnerImpacts = n.sentiment==="bullish"
+                  ? ["This is positive news — could push price higher","Good news can attract more buyers","Watch for upward moves after this"]
+                  : ["This is negative news — could push price lower","Bad news can cause panic selling","Caution: price could fall after this"];
                 return (
                   <div key={i} className="news-row" onClick={()=>n.url&&window.open(n.url,"_blank")}>
                     <div style={{width:3,minHeight:42,borderRadius:2,background:n.sentiment==="bullish"?C.green:C.red,flexShrink:0,marginTop:2}}/>
                     <div style={{flex:1}}>
                       <div style={{fontSize:10,color:"#c9d1d9",lineHeight:1.6,marginBottom:4}}>{n.text}</div>
-                      <div style={{fontSize:8,color:"#4a5568",fontStyle:"italic",marginBottom:4}}>↳ {impacts[i%3]}</div>
+                      <div style={{fontSize:8,color:"#4a5568",fontStyle:"italic",marginBottom:4}}>
+                        ↳ {mode==="Beginner" ? beginnerImpacts[i%3] : impacts[i%3]}
+                      </div>
                       <div style={{display:"flex",gap:5,alignItems:"center"}}>
                         <span style={{fontSize:8,color:"#30363d"}}>{n.source}</span>
                         <span style={{fontSize:7,padding:"1px 5px",borderRadius:2,background:n.sentiment==="bullish"?C.green+"15":C.red+"15",color:n.sentiment==="bullish"?C.green:C.red,fontWeight:700}}>{n.sentiment==="bullish"?"▲ BULL":"▼ BEAR"}</span>
@@ -1402,13 +1680,12 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
             })}
           </div>
 
-          {/* DNA summary for active market */}
           {dna && !analyzing && (
             <div style={{padding:"10px",borderTop:`1px solid ${C.border}`,flexShrink:0}}>
               <div style={{fontSize:7,color:"#4a5568",letterSpacing:2,marginBottom:7}}>DNA SNAPSHOT</div>
               {[
                 {l:"PulseScore™",v:`${dna.pulseScore}`,c:dna.pulseScore>=62?C.green:dna.pulseScore<=38?C.red:C.amber},
-                {l:"Trend",v:`${dna.trendStrength.toFixed(0)}%`,c:dna.trendStrength>60?C.green:C.amber},
+                {l:"Danger™",v:`${dangerScore}`,c:dangerColor},
                 {l:"Trap™",v:`${dna.trapProb}%`,c:dna.trapProb>55?C.amber:C.muted},
                 {l:"Exit Radar™",v:`${dna.exitRisk}%`,c:dna.exitRisk>60?C.red:C.muted},
                 {l:"RSI",v:`${dna.lastRSI?.toFixed(0)}`,c:dna.lastRSI>70?C.red:dna.lastRSI<30?C.green:C.muted},
