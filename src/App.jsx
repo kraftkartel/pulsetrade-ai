@@ -151,7 +151,8 @@ function TVChart({ market, candles, onPriceUpdate }) {
   const drawRef     = useRef({ active: "cursor", points: [], overlays: [] });
 
   const [tool,      setTool]      = useState("cursor");
-  useEffect(() => { drawRef.current.active = tool; }, [tool]);
+  const [drawingPoint, setDrawingPoint] = useState(false);
+  useEffect(() => { drawRef.current.active = tool; setDrawingPoint(false); }, [tool]);
   const [showEMA20, setShowEMA20] = useState(true);
   const [showEMA50, setShowEMA50] = useState(true);
   const [showVol,   setShowVol]   = useState(true);
@@ -208,42 +209,6 @@ function TVChart({ market, candles, onPriceUpdate }) {
       if (!p.time || !p.seriesData) { setOhlc(null); return; }
       const d = p.seriesData.get(cs);
       if (d) setOhlc(d);
-    });
-
-    chart.subscribeClick(p => {
-      const ds = drawRef.current;
-      if (ds.active === "cursor" || !p.point || !p.time) return;
-      if (ds.active === "eraser") {
-        ds.overlays.forEach(s => { try { chart.removeSeries(s); } catch {} });
-        drawRef.current = { active: "cursor", points: [], overlays: [] };
-        return;
-      }
-      const price = chart.priceScale("right").coordinateToPrice(p.point.y);
-      if (!price) return;
-      if (ds.active === "hline") {
-        const s = chart.addLineSeries({ color: "#f59e0baa", lineWidth: 1, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: true });
-        s.setData([{ time: candles[0].time, value: price }, { time: candles[candles.length-1].time + 86400*60, value: price }]);
-        ds.overlays.push(s); return;
-      }
-      if (ds.active === "trendline" || ds.active === "fib") {
-        if (!ds.points.length) { ds.points = [{ time: p.time, price }]; return; }
-        const p1 = ds.points[0];
-        if (ds.active === "trendline") {
-          const s = chart.addLineSeries({ color: "#2962ff", lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
-          const t1 = Math.min(p1.time, p.time), t2 = Math.max(p1.time, p.time);
-          s.setData([{ time: t1, value: p1.time <= p.time ? p1.price : price }, { time: t2, value: p1.time <= p.time ? price : p1.price }]);
-          ds.overlays.push(s);
-        } else {
-          const hi = Math.max(p1.price, price), lo = Math.min(p1.price, price), range = hi - lo;
-          [0, 23.6, 38.2, 50, 61.8, 78.6, 100].forEach(pct => {
-            const level = hi - range * (pct / 100);
-            const s = chart.addLineSeries({ color: `rgba(206,147,216,${pct===0||pct===100?0.9:0.5})`, lineWidth: 1, lineStyle: LineStyle.Dotted, priceLineVisible: false, lastValueVisible: true, title: `${pct}%` });
-            s.setData([{ time: candles[0].time, value: level }, { time: candles[candles.length-1].time + 86400*60, value: level }]);
-            ds.overlays.push(s);
-          });
-        }
-        ds.points = [];
-      }
     });
 
     if (rsiRef.current) {
@@ -328,7 +293,7 @@ function TVChart({ market, candles, onPriceUpdate }) {
     }
 
     if (tool === "trendline" || tool === "fib") {
-      if (!dr.active) { dr.active = tool; dr.points = [{ time, price }]; }
+      if (!dr.active) { dr.active = tool; dr.points = [{ time, price }]; setDrawingPoint(true); }
       else {
         const p1 = dr.points[0];
         if (tool === "trendline") {
@@ -345,7 +310,7 @@ function TVChart({ market, candles, onPriceUpdate }) {
             dr.overlays.push(s);
           });
         }
-        dr.active = null; dr.points = [];
+        dr.active = null; dr.points = []; setDrawingPoint(false);
       }
     }
   }, [tool, candles, clearDrawings]);
@@ -421,7 +386,7 @@ function TVChart({ market, candles, onPriceUpdate }) {
 
         {/* Main chart + RSI */}
         <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", position:"relative" }}>
-          {drawRef.current.active && (
+          {drawingPoint && (
             <div style={{ position:"absolute", top:8, left:"50%", transform:"translateX(-50%)", zIndex:10, background:"#2a2e39ee", color:"#2962ff", fontSize:11, padding:"3px 14px", borderRadius:12, border:"1px solid #2962ff35", pointerEvents:"none" }}>
               Click second point · {drawRef.current.active}
             </div>
@@ -458,6 +423,11 @@ export default function PulseTradeAI() {
   const [marketPrices, setMarketPrices] = useState(() => Object.fromEntries(MARKETS.map(m => [m.id, m.base])));
   const [sparks]    = useState(() => MARKETS.map(m => Array.from({ length:24 }, () => m.base * (0.96 + Math.random() * 0.08))));
 
+  useEffect(() => {
+    const c = generateOHLCV(market.base);
+    setCandles(c);
+  }, [activeIv]);
+
   useEffect(() => { (async () => {
     const c = generateOHLCV(market.base);
     setCandles(c);
@@ -484,7 +454,7 @@ export default function PulseTradeAI() {
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-api-key": "your_anthropic_key_here", "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-calls": "true" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1000, messages:[{ role:"user", content:prompt }] })
       });
       const data = await res.json();
@@ -497,17 +467,18 @@ export default function PulseTradeAI() {
     setLoading(false);
   }
 
-  const winRate = Math.round((accuracy.correct / accuracy.total) * 100);
+  const winRate = accuracy.total === 0 ? 0 : Math.round((accuracy.correct / accuracy.total) * 100);
   const up = priceChange >= 0;
 
   const C = { bg:"#131722", panel:"#1e222d", border:"#2a2e39", text:"#b2b5be", muted:"#787b86", accent:"#2962ff", green:"#26a69a", red:"#ef5350", amber:"#f59e0b" };
 
   return (
-    <div style={{ margin:0, padding:0, height:"100vh", background:C.bg, color:C.text, display:"flex", flexDirection:"column", fontFamily:"Trebuchet MS, sans-serif", overflow:"hidden" }}>
+    <div style={{ margin:0, padding:0, height:"100vh", background:"#131722", color:C.text, display:"flex", flexDirection:"column", fontFamily:"'Trebuchet MS', sans-serif", overflow:"hidden" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap');
         *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
-        html, body, #root { margin:0; padding:0; background:#131722; height:100vh; overflow:hidden; }
+        html, body, #root { margin:0; padding:0; background:#131722; height:100vh; overflow:hidden; color-scheme: dark; }
+        input, select { background:#131722; color:#b2b5be; border:1px solid #2a2e39; border-radius:3px; font-family:inherit; }
         ::-webkit-scrollbar { width:4px; height:4px; }
         ::-webkit-scrollbar-track { background:#131722; }
         ::-webkit-scrollbar-thumb { background:#2a2e39; border-radius:2px; }
@@ -517,8 +488,8 @@ export default function PulseTradeAI() {
         .blink { animation:blink 2s infinite; }
         .fadein { animation:fadeIn .3s ease; }
         .mkt-row { display:flex; align-items:center; gap:10px; padding:7px 10px; cursor:pointer; border-left:2px solid transparent; transition:all .12s; }
-        .mkt-row:hover { background:#252a36; }
-        .mkt-row.active { border-left-color:#2962ff; background:#1e2235; }
+        .mkt-row:hover { background:#1c2030; }
+        .mkt-row.active { border-left-color:#2962ff; background:#161b2e; }
         .iv-btn { padding:3px 8px; font-size:11px; font-weight:600; border-radius:3px; cursor:pointer; border:none; background:transparent; color:#787b86; transition:all .1s; font-family:inherit; }
         .iv-btn:hover { color:#b2b5be; background:#2a2e39; }
         .iv-btn.active { color:#2962ff; background:#2962ff15; }
@@ -535,7 +506,7 @@ export default function PulseTradeAI() {
       `}</style>
 
       {/* ══ TOPBAR ══ */}
-      <div style={{ height:44, background:C.panel, borderBottom:`1px solid ${C.border}`, display:"flex", alignItems:"center", padding:"0 12px", gap:14, flexShrink:0, zIndex:100 }}>
+      <div style={{ height:38, background:"#1e222d", borderBottom:"1px solid #2a2e39", display:"flex", alignItems:"center", padding:"0 10px", gap:10, flexShrink:0, zIndex:100 }}>
 
         <div style={{ display:"flex", alignItems:"center", gap:8, marginRight:4 }}>
           <div style={{ width:26, height:26, background:"linear-gradient(135deg,#2962ff,#26a69a)", borderRadius:5, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>⚡</div>
@@ -568,8 +539,8 @@ export default function PulseTradeAI() {
       <div style={{ display:"flex", flex:1, overflow:"hidden" }}>
 
         {/* LEFT: Watchlist */}
-        <div style={{ width:190, background:C.panel, borderRight:`1px solid ${C.border}`, display:"flex", flexDirection:"column", flexShrink:0, overflow:"hidden" }}>
-          <div style={{ padding:"7px 10px 5px", fontSize:9, color:C.muted, letterSpacing:2.5, borderBottom:`1px solid ${C.border}` }}>WATCHLIST</div>
+        <div style={{ width:180, background:"#131722", borderRight:"1px solid #2a2e39", display:"flex", flexDirection:"column", flexShrink:0, overflow:"hidden" }}>
+          <div style={{ padding:"6px 10px 5px", fontSize:9, color:"#4a5568", letterSpacing:2.5, borderBottom:"1px solid #2a2e39", textTransform:"uppercase", fontWeight:700 }}>Watchlist</div>
           <div style={{ flex:1, overflowY:"auto" }}>
             {MARKETS.map((m) => {
               const p = marketPrices[m.id] || m.base;
@@ -612,7 +583,7 @@ export default function PulseTradeAI() {
 
         {/* CENTER: Chart + tabs */}
         <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-          <div style={{ display:"flex", borderBottom:`1px solid ${C.border}`, background:C.panel, flexShrink:0 }}>
+          <div style={{ display:"flex", borderBottom:"1px solid #2a2e39", background:"#131722", flexShrink:0 }}>
             {[["chart","Chart"],["news","News"],["accuracy","Accuracy"]].map(([id,label]) => (
               <button key={id} className={`tab ${tab===id?"active":""}`} onClick={() => setTab(id)}>{label}</button>
             ))}
@@ -701,7 +672,7 @@ export default function PulseTradeAI() {
         </div>
 
         {/* RIGHT: Market overview + win rate */}
-        <div style={{ width:170, background:C.panel, borderLeft:`1px solid ${C.border}`, display:"flex", flexDirection:"column", flexShrink:0, overflow:"hidden" }}>
+        <div style={{ width:160, background:"#131722", borderLeft:"1px solid #2a2e39", display:"flex", flexDirection:"column", flexShrink:0, overflow:"hidden" }}>
           <div style={{ padding:"7px 10px 5px", fontSize:9, color:C.muted, letterSpacing:2.5, borderBottom:`1px solid ${C.border}` }}>OVERVIEW</div>
           <div style={{ flex:1, overflowY:"auto", padding:"6px" }}>
             {MARKETS.map((m, mi) => {
@@ -720,7 +691,7 @@ export default function PulseTradeAI() {
               );
             })}
           </div>
-          <div style={{ padding:"10px", borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
+          <div style={{ padding:"10px", borderTop:"1px solid #2a2e39", background:"#131722", flexShrink:0 }}>
             <div style={{ fontSize:9, color:C.muted, letterSpacing:2, marginBottom:7 }}>AI WIN RATE</div>
             <div style={{ fontSize:26, fontWeight:700, color: winRate>65?C.green:C.amber, fontFamily:"JetBrains Mono,monospace", lineHeight:1 }}>{winRate}%</div>
             <div style={{ fontSize:9, color:C.muted, marginTop:3 }}>{accuracy.total} signals</div>
