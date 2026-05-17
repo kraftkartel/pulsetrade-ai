@@ -7,7 +7,7 @@ import { createChart, CrosshairMode, LineStyle } from "lightweight-charts";
    BY TWUMVE  ·  v3.1 ELITE  —  Beginner/Advanced/Pro Edition
 ════════════════════════════════════════════════════════════════ */
 
-const GNEWS_KEY = "8603087de8be4d5c96370d5adfc3a1ab";
+const GNEWS_KEY = import.meta.env.VITE_GNEWS_KEY || "";
 
 async function fetchLivePrice(marketId) {
   const geckoMap = {
@@ -1077,6 +1077,11 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
 5. [EDGE] One clear verdict: is there a tradeable edge or not. Give a probability and the exact reason why.`;
     try {
       const GROQ_KEY = import.meta.env.VITE_GROQ_KEY || "";
+      if (!GROQ_KEY) {
+        setDeepAnalysis("ERROR: VITE_GROQ_KEY is not set. Add it to Vercel environment variables and redeploy.");
+        setLoading(false);
+        return;
+      }
       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method:"POST",
         headers:{"Content-Type":"application/json","Authorization":`Bearer ${GROQ_KEY}`},
@@ -1088,8 +1093,8 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
       });
       const data = await res.json();
       setDeepAnalysis(data.choices?.[0]?.message?.content || "Analysis unavailable.");
-    } catch {
-      setDeepAnalysis("Deep analysis connection failed. Check Anthropic API key.");
+    } catch (err) {
+      setDeepAnalysis(`Connection failed: ${err?.message || String(err)}`);
     }
     setLoading(false);
   }
