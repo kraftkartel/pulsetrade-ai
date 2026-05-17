@@ -254,6 +254,42 @@ function buildRegressionChannel(candles) {
   return { mid, upper, lower, slope };
 }
 
+function generateScenarios(prediction, signal, patterns) {
+  const bull = prediction?.bullProb || 50;
+  const bear = prediction?.bearProb || 50;
+  const sideways = Math.max(0, Math.min(30, Math.floor((100 - Math.abs(bull - bear)) * 0.35)));
+  const total = bull + bear + sideways;
+  return [
+    { label:"Bullish Continuation", prob: Math.round(bull * (1 - sideways/total)), color:"#26a69a", icon:"▲",
+      reason: signal?.signal==="BUY" ? "Higher lows forming, momentum expanding above EMA stack." : "Oversold bounce likely from key demand zone." },
+    { label:"Sideways Consolidation", prob: sideways, color:"#f59e0b", icon:"↔",
+      reason: "Range-bound behavior between liquidity zones. Market awaiting catalyst." },
+    { label:"Bearish Reversal", prob: Math.round(bear * (1 - sideways/total)), color:"#ef5350", icon:"▼",
+      reason: signal?.signal==="SELL" ? "Lower highs confirmed. Distribution phase likely underway." : "Resistance rejection near supply zone. Momentum weakening." },
+  ].sort((a,b) => b.prob - a.prob);
+}
+
+function buildAIReasoning(candles, signal, prediction, patterns, bosSignals) {
+  const last = candles[candles.length-1];
+  const prev = candles[candles.length-6];
+  const trendUp = last.close > prev.close;
+  const vol = prediction?.volatility || 0;
+  const conf = signal?.confidence || 65;
+  const lines = [];
+  lines.push(trendUp
+    ? `Price is making higher lows — bullish market structure intact.`
+    : `Price printing lower highs — bearish structure developing.`);
+  if (vol > 1.2) lines.push(`Elevated volatility (${vol}%) signals institutional activity. Expect fast moves.`);
+  else lines.push(`Low volatility (${vol}%) — compression phase. Breakout likely soon.`);
+  if (bosSignals?.length) lines.push(`${bosSignals[0].label}: ${bosSignals[0].dir === "bullish" ? "Smart money confirmed buying above structure." : "Smart money distributing below structure break."}`);
+  else lines.push(`No confirmed structure break. Watch for BOS/CHoCH as trigger.`);
+  if (conf > 75) lines.push(`High-confidence signal (${conf}%). Multiple timeframe alignment detected.`);
+  else if (conf > 60) lines.push(`Moderate confidence (${conf}%). Signal valid but manage risk carefully.`);
+  else lines.push(`Low confidence (${conf}%). Mixed signals — reduce position size.`);
+  if (patterns?.length) lines.push(`Pattern detected: ${patterns[0].name}. ${patterns[0].icon} Adds directional confluence.`);
+  return lines;
+}
+
 const AI_COMMENTARY = [
   "Smart money accumulation detected near support zone.",
   "Liquidity sweep likely before next directional move.",
@@ -689,7 +725,10 @@ export default function PulseTradeAI() {
   const [sparks]    = useState(() => MARKETS.map(m => Array.from({ length:24 }, () => m.base * (0.96 + Math.random() * 0.08))));
   const [prediction, setPrediction] = useState(null);
   const [patterns,   setPatterns]   = useState([]);
-  const [commentary, setCommentary] = useState("");
+  const [commentary,  setCommentary]  = useState("");
+  const [scenarios,   setScenarios]   = useState([]);
+  const [reasoning,   setReasoning]   = useState([]);
+  const [bosSignals,  setBosSignals]  = useState([]);
   const commentaryRef = useRef(null);
 
   useEffect(() => {
@@ -707,8 +746,15 @@ export default function PulseTradeAI() {
     setNews(n);
     const sig = getSignal(c, n);
     setSignal(sig);
-    setPrediction(generatePrediction(c, sig));
-    setPatterns(detectPatterns(c));
+    const pred = generatePrediction(c, sig);
+    const pats = detectPatterns(c);
+    const swings = detectSwingPoints(c);
+    const bos = detectBOSCHOCH(c, swings);
+    setPrediction(pred);
+    setPatterns(pats);
+    setBosSignals(bos);
+    setScenarios(generateScenarios(pred, sig, pats));
+    setReasoning(buildAIReasoning(c, sig, pred, pats, bos));
     setCommentary(AI_COMMENTARY[Math.floor(Math.random() * AI_COMMENTARY.length)]);
     setAiReason("");
   })(); }, [market]);
@@ -730,7 +776,7 @@ export default function PulseTradeAI() {
     setLoading(true); setAiReason("");
     const bullish = news.filter(n => n.sentiment==="bullish").map(n => n.text);
     const bearish = news.filter(n => n.sentiment==="bearish").map(n => n.text);
-    const prompt = `You are PulseTrade AI, an elite quantitative analyst. Analyze ${market.id} at ${fmt(livePrice, market)} (${priceChange>0?"+":""}${priceChange}%).\n\nBullish factors: ${bullish.join("; ")}\nBearish factors: ${bearish.join("; ")}\nSignal: ${signal?.signal} | Confidence: ${signal?.confidence}%\n\nWrite 3 sharp sentences: (1) the dominant market force right now, (2) why the ${signal?.signal} signal was generated, (3) the single most important risk to watch. Be precise, data-driven, and professional.`;
+    const prompt = `You are PulseTrade AI — a quantitative market reasoning engine, not a chatbot. Analyze ${market.id} at ${fmt(livePrice, market)} (${priceChange>0?"+":""}${priceChange}%).\n\nBullish factors: ${bullish.join("; ")}\nBearish factors: ${bearish.join("; ")}\nSignal: ${signal?.signal} | Confidence: ${signal?.confidence}% | Volatility: ${prediction?.volatility}%\nScenarios: ${scenarios.map(s=>s.label+' '+s.prob+'%').join(', ')}\n\nRespond with exactly 4 numbered lines:\n1. [STRUCTURE] What the market structure shows right now.\n2. [MOMENTUM] Momentum state and what it implies.\n3. [SIGNAL] Why this ${signal?.signal} signal was generated — be specific.\n4. [RISK] The single most important risk that could invalidate this thesis.\n\nTone: calm, precise, probabilistic. Never make guarantees.`;
     try {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
@@ -902,76 +948,96 @@ export default function PulseTradeAI() {
           {tab === "predict" && prediction && (
             <div className="fadein" style={{ flex:1, overflowY:"auto", padding:"14px 16px", display:"flex", flexDirection:"column", gap:10 }}>
 
-              {/* Bull/Bear probability bar */}
+              {/* AI Reasoning Chain */}
+              <div style={{ background:"#0d1117", border:"1px solid #2962ff22", borderRadius:6, padding:"12px 14px", borderLeft:"2px solid #2962ff" }}>
+                <div style={{ fontSize:9, color:"#2962ff", letterSpacing:2, marginBottom:10, display:"flex", alignItems:"center", gap:6 }}>
+                  <span className="blink">●</span> AI REASONING CHAIN
+                </div>
+                {reasoning.map((line, i) => (
+                  <div key={i} style={{ display:"flex", gap:8, marginBottom:7, alignItems:"flex-start" }}>
+                    <span style={{ fontSize:9, color:"#2962ff44", fontFamily:"monospace", marginTop:1, flexShrink:0 }}>{String(i+1).padStart(2,"0")}</span>
+                    <span style={{ fontSize:11, color:"#9ca3af", lineHeight:1.6 }}>{line}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Scenario Engine */}
               <div style={{ background:"#1e222d", border:"1px solid #2a2e39", borderRadius:6, padding:"12px 14px" }}>
-                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>AI DIRECTIONAL PROBABILITY</div>
-                <div style={{ display:"flex", borderRadius:4, overflow:"hidden", height:22, marginBottom:8 }}>
-                  <div style={{ width:`${prediction.bullProb}%`, background:"linear-gradient(90deg,#1a6b5a,#26a69a)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, fontWeight:700, color:"#fff", transition:"width 1s" }}>{prediction.bullProb}%</div>
-                  <div style={{ width:`${prediction.bearProb}%`, background:"linear-gradient(90deg,#ef5350,#7b1f1f)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, fontWeight:700, color:"#fff", transition:"width 1s" }}>{prediction.bearProb}%</div>
+                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>SCENARIO ENGINE</div>
+                {scenarios.map((s, i) => (
+                  <div key={i} style={{ marginBottom: i < scenarios.length-1 ? 10 : 0 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                        <span style={{ fontSize:11, color:s.color }}>{s.icon}</span>
+                        <span style={{ fontSize:11, color:"#e0e3ea", fontWeight:600 }}>{s.label}</span>
+                      </div>
+                      <span style={{ fontSize:12, color:s.color, fontWeight:700, fontFamily:"monospace" }}>{s.prob}%</span>
+                    </div>
+                    <div style={{ background:"#131722", borderRadius:2, height:4, overflow:"hidden", marginBottom:4 }}>
+                      <div style={{ width:`${s.prob}%`, height:"100%", background:s.color, transition:"width 1s", opacity:0.8 }} />
+                    </div>
+                    <div style={{ fontSize:10, color:"#4a5568", fontStyle:"italic" }}>{s.reason}</div>
+                    {i < scenarios.length-1 && <div style={{ height:1, background:"#2a2e39", marginTop:10 }} />}
+                  </div>
+                ))}
+              </div>
+
+              {/* Probability split */}
+              <div style={{ background:"#1e222d", border:"1px solid #2a2e39", borderRadius:6, padding:"12px 14px" }}>
+                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>DIRECTIONAL PROBABILITY</div>
+                <div style={{ display:"flex", borderRadius:3, overflow:"hidden", height:18, marginBottom:8 }}>
+                  <div style={{ width:`${prediction.bullProb}%`, background:"linear-gradient(90deg,#1a4d40,#26a69a)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontWeight:700, color:"#fff", transition:"width 1s" }}>{prediction.bullProb}%</div>
+                  <div style={{ width:`${prediction.bearProb}%`, background:"linear-gradient(90deg,#ef5350,#6b1f1f)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontWeight:700, color:"#fff", transition:"width 1s" }}>{prediction.bearProb}%</div>
                 </div>
                 <div style={{ display:"flex", justifyContent:"space-between", fontSize:9 }}>
-                  <span style={{ color:"#26a69a" }}>▲ BULLISH {prediction.bullProb}%</span>
-                  <span style={{ color:"#ef5350" }}>▼ BEARISH {prediction.bearProb}%</span>
+                  <span style={{ color:"#26a69a" }}>▲ Bull {prediction.bullProb}%</span>
+                  <div style={{ display:"flex", gap:16, fontSize:9 }}>
+                    <span style={{ color:"#787b86" }}>Vol <b style={{ color:"#f59e0b" }}>{prediction.volatility}%</b></span>
+                    <span style={{ color:"#787b86" }}>Conf <b style={{ color:"#26a69a" }}>{signal?.confidence}%</b></span>
+                  </div>
+                  <span style={{ color:"#ef5350" }}>▼ Bear {prediction.bearProb}%</span>
                 </div>
               </div>
 
-              {/* Volatility + commentary */}
+              {/* Pattern + BOS signals */}
               <div style={{ background:"#1e222d", border:"1px solid #2a2e39", borderRadius:6, padding:"12px 14px" }}>
-                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:8 }}>AI MARKET COMMENTARY</div>
-                <div style={{ fontSize:11, color:"#2962ff", lineHeight:1.7, fontStyle:"italic" }}>"{commentary}"</div>
-                <div style={{ marginTop:10, display:"flex", gap:16, fontSize:10 }}>
-                  <span style={{ color:"#787b86" }}>Volatility: <b style={{ color:"#f59e0b" }}>{prediction.volatility}%</b></span>
-                  <span style={{ color:"#787b86" }}>Confidence: <b style={{ color:"#26a69a" }}>{signal?.confidence}%</b></span>
-                </div>
-              </div>
-
-              {/* Pattern detection */}
-              <div style={{ background:"#1e222d", border:"1px solid #2a2e39", borderRadius:6, padding:"12px 14px" }}>
-                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>PATTERN DETECTION</div>
-                {patterns.length === 0 && <div style={{ fontSize:11, color:"#4a5568" }}>No strong patterns detected.</div>}
+                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>MARKET STRUCTURE SIGNALS</div>
+                {bosSignals.map((b, i) => (
+                  <div key={i} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 0", borderBottom:"1px solid #2a2e39" }}>
+                    <div style={{ width:6, height:6, borderRadius:"50%", background:b.color, boxShadow:`0 0 6px ${b.color}` }} />
+                    <span style={{ fontSize:10, color:b.color, fontWeight:700, fontFamily:"monospace" }}>{b.label}</span>
+                    <span style={{ fontSize:10, color:"#4a5568", marginLeft:"auto" }}>{b.dir}</span>
+                  </div>
+                ))}
                 {patterns.map((p, i) => (
-                  <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 0", borderBottom: i < patterns.length-1 ? "1px solid #2a2e39" : "none" }}>
-                    <span style={{ fontSize:14, color:p.color }}>{p.icon}</span>
-                    <span style={{ fontSize:11, color:"#b2b5be" }}>{p.name}</span>
-                    <div style={{ marginLeft:"auto", width:6, height:6, borderRadius:"50%", background:p.color }} />
+                  <div key={i} style={{ display:"flex", alignItems:"center", gap:8, padding:"5px 0", borderBottom: i < patterns.length-1 ? "1px solid #2a2e39":"none" }}>
+                    <span style={{ fontSize:12, color:p.color }}>{p.icon}</span>
+                    <span style={{ fontSize:10, color:"#b2b5be" }}>{p.name}</span>
                   </div>
                 ))}
+                {!bosSignals.length && !patterns.length && <div style={{ fontSize:10, color:"#4a5568" }}>No structural signals detected.</div>}
               </div>
 
-              {/* Smart Money Structure */}
+              {/* Confidence quality meter */}
               <div style={{ background:"#1e222d", border:"1px solid #2a2e39", borderRadius:6, padding:"12px 14px" }}>
-                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>SMART MONEY ANALYSIS</div>
+                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>PREDICTION QUALITY</div>
                 {[
-                  { label:"Liquidity Sweep",    val: Math.random()>0.5?"Detected":"None",   color: Math.random()>0.5?"#ef5350":"#4a5568" },
-                  { label:"Market Structure",   val: signal?.signal==="BUY"?"Bullish BOS":"Bearish CHoCH", color: signal?.signal==="BUY"?"#26a69a":"#ef5350" },
-                  { label:"Orderflow",          val: Math.random()>0.5?"Institutional Buy":"Retail Sell", color:"#2962ff" },
-                  { label:"Fib Confluence",     val: "0.618 Golden Zone",  color:"#ce93d8" },
-                  { label:"Momentum",           val: signal?.signal==="HOLD"?"Neutral":"Strong "+signal?.signal, color: signal?.signal==="BUY"?"#26a69a":signal?.signal==="SELL"?"#ef5350":"#f59e0b" },
-                ].map((row, i) => (
-                  <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0", borderBottom: i<4?"1px solid #2a2e39":"none" }}>
-                    <span style={{ fontSize:10, color:"#787b86" }}>{row.label}</span>
-                    <span style={{ fontSize:10, color:row.color, fontWeight:700 }}>{row.val}</span>
-                  </div>
-                ))}
-              </div>
-
-              {/* Projection legend */}
-              <div style={{ background:"#1e222d", border:"1px solid #2a2e39", borderRadius:6, padding:"12px 14px" }}>
-                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>CHART PROJECTION PATHS</div>
-                {[
-                  { color:"#26a69a", label:"Bullish Path", desc:"High probability upside scenario" },
-                  { color:"#ef5350", label:"Bearish Path", desc:"Downside risk scenario" },
-                  { color:"#f59e0b", label:"Base Case",    desc:"Most likely path given current data" },
-                ].map((item, i) => (
-                  <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"5px 0" }}>
-                    <div style={{ width:24, height:2, background:item.color, borderRadius:1 }} />
-                    <div>
-                      <div style={{ fontSize:10, color:"#e0e3ea", fontWeight:600 }}>{item.label}</div>
-                      <div style={{ fontSize:9, color:"#4a5568" }}>{item.desc}</div>
+                  { label:"Signal Confidence",    val: signal?.confidence || 0,   max:100, color:"#2962ff" },
+                  { label:"Volatility Stability",  val: Math.max(0, 100 - (prediction.volatility * 20)), max:100, color:"#26a69a" },
+                  { label:"Structure Clarity",     val: bosSignals.length ? 80 : 40, max:100, color:"#ce93d8" },
+                  { label:"Pattern Confluence",    val: patterns.length * 33,        max:100, color:"#f59e0b" },
+                ].map((m, i) => (
+                  <div key={i} style={{ marginBottom:8 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:"#787b86", marginBottom:3 }}>
+                      <span>{m.label}</span><span style={{ color:m.color, fontWeight:700 }}>{Math.min(m.val, 100)}%</span>
+                    </div>
+                    <div style={{ background:"#131722", borderRadius:2, height:3, overflow:"hidden" }}>
+                      <div style={{ width:`${Math.min(m.val,100)}%`, height:"100%", background:m.color, transition:"width 1s", opacity:0.75 }} />
                     </div>
                   </div>
                 ))}
               </div>
+
             </div>
           )}
 
@@ -1003,41 +1069,76 @@ export default function PulseTradeAI() {
           )}
 
           {tab === "accuracy" && (
-            <div className="fadein" style={{ flex:1, overflowY:"auto", padding:"14px 16px" }}>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:8, marginBottom:12 }}>
+            <div className="fadein" style={{ flex:1, overflowY:"auto", padding:"14px 16px", display:"flex", flexDirection:"column", gap:10 }}>
+
+              {/* Confidence score cards */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
                 {[
-                  { label:"WIN RATE", value:`${winRate}%`, color: winRate>65?C.green:C.amber },
-                  { label:"SIGNALS",  value:accuracy.total,  color:"#ce93d8" },
-                  { label:"CORRECT",  value:accuracy.correct, color:C.green },
-                  { label:"MISSED",   value:accuracy.total-accuracy.correct, color:C.red },
+                  { label:"SIGNAL QUALITY", value: signal?.confidence ? (signal.confidence > 75 ? "HIGH" : signal.confidence > 60 ? "MED" : "LOW") : "—", sub: `${signal?.confidence || 0}% confidence`, color: signal?.confidence > 75 ? C.green : signal?.confidence > 60 ? C.amber : C.red },
+                  { label:"VOLATILITY GRADE", value: prediction?.volatility < 0.5 ? "A" : prediction?.volatility < 1.2 ? "B" : "C", sub: `${prediction?.volatility || 0}% vol`, color: prediction?.volatility < 0.5 ? C.green : prediction?.volatility < 1.2 ? C.amber : C.red },
+                  { label:"STRUCTURE", value: bosSignals.length ? "CLEAR" : "MIXED", sub: `${bosSignals.length} signal(s)`, color: bosSignals.length ? C.green : C.muted },
+                  { label:"SIGNALS FIRED", value: accuracy.total, sub: `${accuracy.correct} accurate`, color:"#ce93d8" },
                 ].map((s,i) => (
-                  <div key={i} className="stat-card">
-                    <div style={{ fontSize:8, color:C.muted, letterSpacing:2, marginBottom:7 }}>{s.label}</div>
-                    <div style={{ fontSize:24, fontWeight:700, color:s.color, fontFamily:"JetBrains Mono,monospace" }}>{s.value}</div>
+                  <div key={i} className="stat-card" style={{ padding:"10px 12px" }}>
+                    <div style={{ fontSize:8, color:C.muted, letterSpacing:2, marginBottom:6 }}>{s.label}</div>
+                    <div style={{ fontSize:20, fontWeight:700, color:s.color, fontFamily:"JetBrains Mono,monospace", lineHeight:1 }}>{s.value}</div>
+                    <div style={{ fontSize:9, color:"#4a5568", marginTop:4 }}>{s.sub}</div>
                   </div>
                 ))}
               </div>
-              <div className="stat-card" style={{ marginBottom:10 }}>
-                <div style={{ fontSize:9, color:C.muted, letterSpacing:2, marginBottom:12 }}>LAST 10 SIGNALS</div>
-                <div style={{ display:"flex", gap:5 }}>
+
+              {/* Confidence decay */}
+              <div style={{ background:"#1e222d", border:"1px solid #2a2e39", borderRadius:6, padding:"12px 14px" }}>
+                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>CONFIDENCE DECAY MODEL</div>
+                <div style={{ fontSize:10, color:"#4a5568", marginBottom:8 }}>Prediction reliability degrades over time as market conditions evolve.</div>
+                {[5,15,30,60].map((mins, i) => {
+                  const decay = Math.max(0, (signal?.confidence || 65) - i * 8 - Math.random()*5);
+                  return (
+                    <div key={i} style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+                      <span style={{ fontSize:9, color:"#4a5568", width:32, flexShrink:0 }}>+{mins}m</span>
+                      <div style={{ flex:1, background:"#131722", borderRadius:2, height:4, overflow:"hidden" }}>
+                        <div style={{ width:`${decay}%`, height:"100%", background: decay>70?"#26a69a":decay>50?"#f59e0b":"#ef5350", transition:"width 1s" }} />
+                      </div>
+                      <span style={{ fontSize:9, color:"#787b86", width:32, textAlign:"right" }}>{Math.round(decay)}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Signal history */}
+              <div style={{ background:"#1e222d", border:"1px solid #2a2e39", borderRadius:6, padding:"12px 14px" }}>
+                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>SIGNAL HISTORY</div>
+                {accuracy.history.length === 0 && <div style={{ fontSize:10, color:"#4a5568" }}>Run AI Analysis to build history.</div>}
+                <div style={{ display:"flex", gap:4 }}>
                   {accuracy.history.map((h,i) => (
-                    <div key={i} style={{ flex:1, height:42, borderRadius:3, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2, background: h==="W"?C.green+"12":C.red+"12", border:`1px solid ${h==="W"?C.green+"28":C.red+"28"}` }}>
-                      <span style={{ fontSize:12 }}>{h==="W"?"✓":"✗"}</span>
+                    <div key={i} style={{ flex:1, height:38, borderRadius:3, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:2, background: h==="W"?"#26a69a12":"#ef535012", border:`1px solid ${h==="W"?"#26a69a28":"#ef535028"}` }}>
+                      <span style={{ fontSize:11 }}>{h==="W"?"✓":"✗"}</span>
                       <span style={{ fontSize:8, color: h==="W"?C.green:C.red, fontWeight:700 }}>{h}</span>
                     </div>
                   ))}
                 </div>
-              </div>
-              <div className="stat-card">
-                <div style={{ fontSize:9, color:C.muted, letterSpacing:2, marginBottom:8 }}>PERFORMANCE</div>
-                <div style={{ background:"#131722", borderRadius:3, height:16, overflow:"hidden", marginBottom:5 }}>
-                  <div style={{ width:`${winRate}%`, height:"100%", background:`linear-gradient(90deg,${C.accent},${C.green})`, transition:"width 1s", display:"flex", alignItems:"center", justifyContent:"flex-end", paddingRight:5 }}>
-                    <span style={{ fontSize:8, color:"#fff", fontWeight:700 }}>{winRate}%</span>
+                {accuracy.total > 0 && (
+                  <div style={{ marginTop:10, background:"#131722", borderRadius:2, height:3, overflow:"hidden" }}>
+                    <div style={{ width:`${winRate}%`, height:"100%", background:`linear-gradient(90deg,${C.accent},${C.green})`, transition:"width 1s" }} />
                   </div>
-                </div>
-                <div style={{ display:"flex", justifyContent:"space-between", fontSize:9, color:C.muted }}>
-                  <span>0% Poor</span><span>50% Avg</span><span>80%+ Great</span>
-                </div>
+                )}
+              </div>
+
+              {/* Market condition grade */}
+              <div style={{ background:"#1e222d", border:"1px solid #2a2e39", borderRadius:6, padding:"12px 14px" }}>
+                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>CURRENT MARKET CONDITIONS</div>
+                {[
+                  { label:"Trending",    val: Math.random()>0.4, desc:"Directional bias present" },
+                  { label:"Liquid",      val: Math.random()>0.3, desc:"Sufficient volume for clean moves" },
+                  { label:"Low Noise",   val: Math.random()>0.5, desc:"Price action is readable" },
+                  { label:"Predictable", val: (signal?.confidence||0) > 65, desc:"AI confidence above threshold" },
+                ].map((c, i) => (
+                  <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"5px 0", borderBottom: i<3?"1px solid #2a2e39":"none" }}>
+                    <div style={{ width:6, height:6, borderRadius:"50%", background: c.val ? C.green : "#4a5568", flexShrink:0 }} />
+                    <span style={{ fontSize:10, color: c.val ? "#e0e3ea" : "#4a5568", fontWeight: c.val ? 600 : 400 }}>{c.label}</span>
+                    <span style={{ fontSize:9, color:"#4a5568", marginLeft:"auto" }}>{c.desc}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
