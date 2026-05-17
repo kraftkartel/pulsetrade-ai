@@ -28,8 +28,8 @@ async function fetchLivePrice(marketId) {
 }
 
 const MARKETS = [
-  { id: "BTC/USD",  icon: "₿",  base: 67420,  category: "Crypto",    decimals: 2,  vol24h: "42.1B",  mktCap: "1.32T" },
-  { id: "ETH/USD",  icon: "Ξ",  base: 3540,   category: "Crypto",    decimals: 2,  vol24h: "18.7B",  mktCap: "425B"  },
+  { id: "BTC/USD",  icon: "₿",  base: 103500, category: "Crypto",    decimals: 2,  vol24h: "42.1B",  mktCap: "1.32T" },
+  { id: "ETH/USD",  icon: "Ξ",  base: 2450,   category: "Crypto",    decimals: 2,  vol24h: "18.7B",  mktCap: "425B"  },
   { id: "GOLD",     icon: "Au", base: 2341,   category: "Commodity", decimals: 2,  vol24h: "142B",   mktCap: "14.6T" },
   { id: "EUR/USD",  icon: "€",  base: 1.0823, category: "Forex",     decimals: 5,  vol24h: "7.5T",   mktCap: "—"     },
   { id: "COFFEE",   icon: "☕", base: 2.14,   category: "Commodity", decimals: 4,  vol24h: "3.2B",   mktCap: "—"     },
@@ -40,6 +40,14 @@ const INTERVALS = ["1m","5m","15m","1H","4H","1D","1W"];
 
 /* ── PATCH 4: Beginner/Advanced/Pro mode system ── */
 const MODES = ["Beginner", "Advanced", "Pro"];
+
+/* ── localStorage persistence helpers ── */
+function lsGet(key, fallback) {
+  try { const v = localStorage.getItem("pt_" + key); return v !== null ? JSON.parse(v) : fallback; } catch { return fallback; }
+}
+function lsSet(key, val) {
+  try { localStorage.setItem("pt_" + key, JSON.stringify(val)); } catch {}
+}
 
 const BEGINNER_TRANSLATIONS = {
   "MOMENTUM EXHAUSTION": {
@@ -149,12 +157,15 @@ function generateOHLCV(base, count = 180) {
   const candles = [];
   let price = base;
   const now = Math.floor(Date.now() / 1000);
+  // Scale volatility to asset class — EUR/USD needs 0.0003, BTC needs 0.008
+  const volScale = base < 5 ? 0.0012 : base < 100 ? 0.006 : base < 1000 ? 0.009 : 0.011;
+  const wicks = base < 5 ? 0.0008 : 0.003;
   for (let i = count; i >= 0; i--) {
-    const vol = (Math.random() - 0.478) * base * 0.013;
+    const move = (Math.random() - 0.478) * base * volScale;
     const open = price;
-    price = Math.max(price + vol, base * 0.72);
-    const high = Math.max(open, price) * (1 + Math.random() * 0.005);
-    const low  = Math.min(open, price) * (1 - Math.random() * 0.005);
+    price = Math.max(price + move, base * 0.80);
+    const high = Math.max(open, price) * (1 + Math.random() * wicks);
+    const low  = Math.min(open, price) * (1 - Math.random() * wicks);
     candles.push({
       time: now - i * 300,
       open: parseFloat(open.toFixed(6)), high: parseFloat(high.toFixed(6)),
@@ -941,7 +952,10 @@ function TVChart({ market, candles, onPriceUpdate, dna, prediction }) {
    MAIN APP — PULSETRADE AI™ v3.1
 ═══════════════════════════════════════════════════ */
 export default function PulseTradeAI() {
-  const [market,      setMarket]      = useState(MARKETS[0]);
+  const [market,      setMarket]      = useState(() => {
+    const saved = lsGet("market", "BTC/USD");
+    return MARKETS.find(m => m.id === saved) || MARKETS[0];
+  });
   const [candles,     setCandles]     = useState(() => generateOHLCV(MARKETS[0].base));
   const [news,        setNews]        = useState([]);
 
@@ -954,15 +968,24 @@ export default function PulseTradeAI() {
   const [prediction,  setPrediction]  = useState(null);
   const [loading,     setLoading]     = useState(false);
   const [deepAnalysis,setDeepAnalysis]= useState("");
+  const deepAnalysisCache = useRef({});
   const [livePrice,   setLivePrice]   = useState(MARKETS[0].base);
   const [priceChange, setPriceChange] = useState(0);
-  const [activeIv,    setActiveIv]    = useState("5m");
+  const [activeIv,    setActiveIv]    = useState(() => lsGet("iv", "5m"));
 
   /* PATCH 12: Default to chart tab */
-  const [tab,         setTab]         = useState("chart");
+  const [tab,         setTab]         = useState(() => lsGet("tab", "copilot"));
 
   /* PATCH 5: Beginner/Advanced/Pro mode state */
-  const [mode,        setMode]        = useState("Advanced");
+  const [mode,        setMode]        = useState(() => lsGet("mode", "Advanced"));
+
+  // Persist user preferences
+  useEffect(() => { lsSet("tab", tab); }, [tab]);
+  useEffect(() => { lsSet("mode", mode); }, [mode]);
+  useEffect(() => { lsSet("iv", activeIv); }, [activeIv]);
+
+  // Persist last selected market
+  useEffect(() => { lsSet("market", market.id); }, [market]);
 
   const [marketPrices,setMarketPrices]= useState(() => Object.fromEntries(MARKETS.map(m=>[m.id,m.base])));
   const [sparks, setSparks] = useState(() => MARKETS.map(m => Array.from({length:24},()=>m.base*(0.95+Math.random()*0.1))));
@@ -971,7 +994,8 @@ export default function PulseTradeAI() {
 
   /* PATCH 2: Use cache when switching markets */
   useEffect(() => { (async () => {
-    setDeepAnalysis("");
+    // Restore cached deep analysis for this market
+    setDeepAnalysis(deepAnalysisCache.current[market.id] || "");
 
     // Serve cached DNA instantly while fresh data loads
     if (dnaCache.current[market.id]) {
@@ -1021,7 +1045,9 @@ export default function PulseTradeAI() {
     fetchLivePrice(market.id).then(live => {
       if (live?.price) {
         setLivePrice(live.price);
-        setPriceChange(parseFloat((live.change24h||0).toFixed(2)));
+        // Use real 24h change from Binance for crypto, fallback calc for others
+        const realChange = live.change24h !== undefined ? parseFloat(live.change24h.toFixed(2)) : parseFloat(((live.price - market.base) / market.base * 100).toFixed(2));
+        setPriceChange(realChange);
       }
     });
     const interval = setInterval(() => {
@@ -1114,13 +1140,14 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
     try {
       const GROQ_KEY = import.meta.env.VITE_GROQ_KEY || "";
       if (!GROQ_KEY) {
-        setDeepAnalysis(
+        const fallbackAnalysis =
           `[STRUCTURE] EMA stack ${dna.marketBias > 0 ? "bullish" : "bearish"} — price ${dna.marketBias > 0 ? "above" : "below"} both EMAs. Trend phase: ${dna.trendStrength > 60 ? "mature" : "early"}.\n` +
           `[TRAPSENSE] ${dna.trapWarnings[0]?.type || "No active trap"} — ${dna.trapWarnings[0]?.desc || "Market participation appears genuine at this time."}.\n` +
           `[EXIT RADAR] Exit risk at ${dna.exitRisk}%. ${dna.exitWarnings[0]?.desc || "No imminent exit signal. Hold with standard stop management."}.\n` +
           `[SMART MONEY] Institutional bias reading ${dna.smBias > 20 ? "accumulation" : dna.smBias < -20 ? "distribution" : "neutral"} — ${dna.smBias > 0 ? "large-body candles favor buyers" : "selling pressure from larger players"}.\n` +
-          `[EDGE] ${dna.signal !== "WAIT" ? `${dna.confidence}% confidence ${dna.signal} signal. PulseScore ${dna.pulseScore}/100 with ${dna.mtfConfluence ? "confirmed" : "divergent"} MTF confluence.` : "No tradeable edge confirmed. Insufficient confluence across timeframes — stand aside."}`
-        );
+          `[EDGE] ${dna.signal !== "WAIT" ? `${dna.confidence}% confidence ${dna.signal} signal. PulseScore ${dna.pulseScore}/100 with ${dna.mtfConfluence ? "confirmed" : "divergent"} MTF confluence.` : "No tradeable edge confirmed. Insufficient confluence across timeframes — stand aside."}`;
+        deepAnalysisCache.current[market.id] = fallbackAnalysis;
+        setDeepAnalysis(fallbackAnalysis);
         setLoading(false);
         return;
       }
@@ -1134,7 +1161,9 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
         }),
       });
       const data = await res.json();
-      setDeepAnalysis(data.choices?.[0]?.message?.content || "Analysis unavailable.");
+      const analysis = data.choices?.[0]?.message?.content || "Analysis unavailable.";
+      deepAnalysisCache.current[market.id] = analysis;
+      setDeepAnalysis(analysis);
     } catch (err) {
       setDeepAnalysis(`Connection failed: ${err?.message || String(err)}`);
     }
@@ -1212,9 +1241,17 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
 
         {/* Logo */}
         <div style={{display:"flex",alignItems:"center",gap:7,marginRight:6}}>
-          <div style={{width:32,height:32,background:"#0d1117",border:"1px solid #1f6feb44",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0,position:"relative"}}>
-            ⚡
-            <div style={{position:"absolute",inset:0,borderRadius:7,background:"radial-gradient(circle at 60% 40%,#1f6feb18,transparent 70%)"}}/>
+          <div style={{width:32,height:32,background:"linear-gradient(135deg,#0d1117,#0f1d35)",border:"1px solid #1f6feb55",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,position:"relative",overflow:"hidden"}}>
+            <svg width={18} height={18} viewBox="0 0 18 18" fill="none">
+              <polygon points="9,1 11.5,7 18,7 13,11 15,17 9,13 3,17 5,11 0,7 6.5,7" fill="#1f6feb" opacity="0.15"/>
+              <polygon points="9,3 11,7.5 16,7.5 12,10.5 13.5,15 9,12 4.5,15 6,10.5 2,7.5 7,7.5" fill="none" stroke="#1f6feb" strokeWidth="0.8"/>
+              <circle cx={9} cy={9} r={2.5} fill="#1f6feb"/>
+              <line x1={9} y1={3} x2={9} y2={5} stroke="#1f6feb" strokeWidth="1" opacity="0.6"/>
+              <line x1={9} y1={13} x2={9} y2={15} stroke="#1f6feb" strokeWidth="1" opacity="0.6"/>
+              <line x1={3} y1={9} x2={5} y2={9} stroke="#1f6feb" strokeWidth="1" opacity="0.6"/>
+              <line x1={13} y1={9} x2={15} y2={9} stroke="#1f6feb" strokeWidth="1" opacity="0.6"/>
+            </svg>
+            <div style={{position:"absolute",inset:0,borderRadius:7,background:"radial-gradient(circle at 60% 30%,#1f6feb22,transparent 70%)"}}/>
           </div>
           <div>
             <div style={{fontWeight:700,fontSize:13,color:"#e6edf3",letterSpacing:.3,lineHeight:1,display:"flex",alignItems:"center",gap:5}}>
@@ -1279,8 +1316,11 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
           )}
           <SoundToggle />
           <div style={{display:"flex",alignItems:"center",gap:5}}>
-            <div className="blink" style={{width:6,height:6,borderRadius:"50%",background:C.green}}/>
-            <span style={{fontSize:8,color:C.green,letterSpacing:2}}>LIVE</span>
+            <div style={{position:"relative",width:8,height:8}}>
+              <div style={{width:8,height:8,borderRadius:"50%",background:C.green,position:"absolute"}}/>
+              <div className="blink" style={{width:8,height:8,borderRadius:"50%",background:C.green,position:"absolute",opacity:0.5,transform:"scale(1.8)"}}/>
+            </div>
+            <span style={{fontSize:8,color:C.green,letterSpacing:2,fontWeight:700}}>LIVE</span>
           </div>
         </div>
       </div>
@@ -1324,7 +1364,14 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
                   </div>
                   <div style={{textAlign:"right",flexShrink:0}}>
                     <div style={{fontSize:9,color:isUp?C.green:C.red}}>{fmt(p,m)}</div>
-                    <div style={{fontSize:7,color:isUp?C.green:C.red}}>{isUp?"+":""}{chg}%</div>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:3,marginTop:1}}>
+                      <span style={{fontSize:7,color:isUp?C.green:C.red}}>{isUp?"+":""}{chg}%</span>
+                      {dnaCache.current[m.id]?.dna?.signal && (
+                        <span style={{fontSize:5,padding:"1px 3px",borderRadius:2,background:dnaCache.current[m.id].dna.signalColor+"22",color:dnaCache.current[m.id].dna.signalColor,fontWeight:700,letterSpacing:.5}}>
+                          {dnaCache.current[m.id].dna.signal}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -1439,7 +1486,7 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
 
         {/* ═══ CENTER — CHART + TABS ═══ */}
         <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
-          <div style={{display:"flex",borderBottom:`1px solid ${C.border}`,background:"#0a0d13",flexShrink:0,borderTop:`2px solid #1f6feb18`}}>
+          <div style={{display:"flex",borderBottom:`1px solid ${C.border}`,background:"#0a0d13",flexShrink:0,borderTop:`2px solid #1f6feb18`,overflowX:"auto",scrollbarWidth:"none"}}>
             {[
               ["chart","Chart"],
               ["copilot","🤖 Co-Pilot"],
@@ -1448,7 +1495,11 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               ["news","News"],
               ["sizing","Position Size"],
             ].map(([id,label]) => (
-              <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>{label}</button>
+              <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)} style={{
+                whiteSpace:"nowrap",
+                ...(id==="copilot" && tab!=="copilot" ? {color:"#1f6feb88",borderBottom:"2px solid #1f6feb22"} : {}),
+                ...(id==="copilot" && tab==="copilot" ? {color:"#1f6feb",borderBottom:"2px solid #1f6feb",background:"#1f6feb08"} : {}),
+              }}>{label}</button>
             ))}
           </div>
 
@@ -2165,6 +2216,17 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               </div>
             </div>
           )}
+        </div>
+      </div>
+    {/* ══ BOTTOM STATUS BAR ══ */}
+      <div style={{height:18,background:"#0a0d13",borderTop:`1px solid #161b22`,display:"flex",alignItems:"center",padding:"0 12px",gap:16,flexShrink:0,zIndex:100}}>
+        <span style={{fontSize:7,color:"#21262d",letterSpacing:1}}>PULSETRADE AI™ v4.0 · BY TWUMVE</span>
+        <span style={{fontSize:7,color:"#21262d"}}>·</span>
+        <span style={{fontSize:7,color:"#21262d",letterSpacing:1}}>BTC/ETH: BINANCE LIVE · OTHERS: SIMULATED</span>
+        <span style={{fontSize:7,color:"#21262d"}}>·</span>
+        <span style={{fontSize:7,color:"#21262d",letterSpacing:1}}>DNA REFRESH: 4s · PRICE TICK: 3s</span>
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:7,color:"#21262d",letterSpacing:1}}>⚠ FOR EDUCATIONAL USE ONLY · NOT FINANCIAL ADVICE</span>
         </div>
       </div>
     </div>
