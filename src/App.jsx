@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { createChart, CrosshairMode, LineStyle, PriceScaleMode } from "lightweight-charts";
 
 const NEWS_API_KEY = "8603087de8be4d5c96370d5adfc3a1ab";
-
+const ANTHROPIC_KEY = "sk-ant-api03-"; // paste your full key after this
 
 /* ─── MARKETS ─── */
 const MARKETS = [
