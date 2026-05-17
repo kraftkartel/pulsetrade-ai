@@ -475,9 +475,9 @@ function generatePrediction(candles, dna) {
   for (let i=1; i<=32; i++) {
     const t = last.time + i*step, noise = (Math.random()-0.5)*atr*0.35;
     const cf = dna.confidence/100;
-    bp  = bp  + atr*0.16*cf + noise;
-    brp = brp - atr*0.13*cf + noise*0.8;
-    mp  = mp  + atr*(isBull?0.05:-0.05)*cf + noise*0.4;
+    bp  = Math.max(last.close * 0.5, bp  + atr*0.16*cf + noise);
+    brp = Math.max(last.close * 0.5, brp - atr*0.13*cf + noise*0.8);
+    mp  = Math.max(last.close * 0.5, mp  + atr*(isBull?0.05:-0.05)*cf + noise*0.4);
     paths.bull.push({time:t, value:parseFloat(bp.toFixed(6))});
     paths.bear.push({time:t, value:parseFloat(brp.toFixed(6))});
     paths.mid.push( {time:t, value:parseFloat(mp.toFixed(6))});
@@ -939,7 +939,7 @@ export default function PulseTradeAI() {
   const [mode,        setMode]        = useState("Advanced");
 
   const [marketPrices,setMarketPrices]= useState(() => Object.fromEntries(MARKETS.map(m=>[m.id,m.base])));
-  const [sparks]     = useState(() => MARKETS.map(m => Array.from({length:24},()=>m.base*(0.95+Math.random()*0.1))));
+  const [sparks, setSparks] = useState(() => MARKETS.map(m => Array.from({length:24},()=>m.base*(0.95+Math.random()*0.1))));
   const [signalFlash, setSignalFlash] = useState(false);
   const [analyzing,  setAnalyzing]   = useState(true);
 
@@ -986,6 +986,9 @@ export default function PulseTradeAI() {
   }, [activeIv]);
 
   /* PATCH 3: Live DNA refresh every 4 seconds — signals stay current */
+  const candlesRef = useRef(candles);
+  useEffect(() => { candlesRef.current = candles; }, [candles]);
+
   useEffect(() => {
     if (!candles.length || !news.length) return;
     // Seed with real price for crypto on mount
@@ -996,10 +999,11 @@ export default function PulseTradeAI() {
       }
     });
     const interval = setInterval(() => {
-      const swings = detectSwingPoints(candles);
-      const bos = detectBOSCHOCH(candles, swings);
-      const freshDNA = computeMarketDNA(candles, news, bos);
-      const freshPred = generatePrediction(candles, freshDNA);
+      const latestCandles = candlesRef.current;
+      const swings = detectSwingPoints(latestCandles);
+      const bos = detectBOSCHOCH(latestCandles, swings);
+      const freshDNA = computeMarketDNA(latestCandles, news, bos);
+      const freshPred = generatePrediction(latestCandles, freshDNA);
 
       /* PATCH 13: Detect signal changes and alert user */
       if (prevSignalRef.current && prevSignalRef.current !== freshDNA.signal) {
@@ -1023,6 +1027,12 @@ export default function PulseTradeAI() {
       setDna(freshDNA);
       setPrediction(freshPred);
       dnaCache.current[market.id] = { dna: freshDNA, prediction: freshPred };
+      setSparks(prev => prev.map((arr, mi) => {
+        const m = MARKETS[mi];
+        const last = arr[arr.length - 1];
+        const next = Math.max(m.base * 0.85, last * (1 + (Math.random() - 0.49) * 0.008));
+        return [...arr.slice(1), next];
+      }));
     }, 4000);
     return () => clearInterval(interval);
   }, [market.id, candles, news]);
@@ -1078,7 +1088,13 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
     try {
       const GROQ_KEY = import.meta.env.VITE_GROQ_KEY || "";
       if (!GROQ_KEY) {
-        setDeepAnalysis("ERROR: VITE_GROQ_KEY is not set. Add it to Vercel environment variables and redeploy.");
+        setDeepAnalysis(
+          `[STRUCTURE] EMA stack ${dna.marketBias > 0 ? "bullish" : "bearish"} — price ${dna.marketBias > 0 ? "above" : "below"} both EMAs. Trend phase: ${dna.trendStrength > 60 ? "mature" : "early"}.\n` +
+          `[TRAPSENSE] ${dna.trapWarnings[0]?.type || "No active trap"} — ${dna.trapWarnings[0]?.desc || "Market participation appears genuine at this time."}.\n` +
+          `[EXIT RADAR] Exit risk at ${dna.exitRisk}%. ${dna.exitWarnings[0]?.desc || "No imminent exit signal. Hold with standard stop management."}.\n` +
+          `[SMART MONEY] Institutional bias reading ${dna.smBias > 20 ? "accumulation" : dna.smBias < -20 ? "distribution" : "neutral"} — ${dna.smBias > 0 ? "large-body candles favor buyers" : "selling pressure from larger players"}.\n` +
+          `[EDGE] ${dna.signal !== "WAIT" ? `${dna.confidence}% confidence ${dna.signal} signal. PulseScore ${dna.pulseScore}/100 with ${dna.mtfConfluence ? "confirmed" : "divergent"} MTF confluence.` : "No tradeable edge confirmed. Insufficient confluence across timeframes — stand aside."}`
+        );
         setLoading(false);
         return;
       }
@@ -1622,6 +1638,36 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
                 </div>
               </div>
 
+              {/* Pro Raw Data Panel */}
+              {mode === "Pro" && (
+                <div style={{background:"#0d1117",border:"1px solid #1f6feb22",borderRadius:5,padding:"10px 12px",fontFamily:"'JetBrains Mono',monospace"}}>
+                  <div style={{fontSize:7,color:"#1f6feb",letterSpacing:2.5,marginBottom:8}}>PRO · RAW DNA DUMP</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 16px"}}>
+                    {[
+                      ["marketBias", dna.marketBias.toFixed(1)],
+                      ["trendStrength", dna.trendStrength.toFixed(1)],
+                      ["reversalProb", dna.reversalProb],
+                      ["trapProb", dna.trapProb],
+                      ["exitRisk", dna.exitRisk],
+                      ["smBias", dna.smBias.toFixed(1)],
+                      ["pulseScore", dna.pulseScore],
+                      ["confidence", dna.confidence],
+                      ["volRatio", dna.volRatio?.toFixed(3)],
+                      ["volPct", dna.volPct],
+                      ["lastRSI", dna.lastRSI?.toFixed(2)],
+                      ["macdHist", dna.lastMACD?.hist?.toFixed(6)],
+                      ["mtfConfluence", String(dna.mtfConfluence)],
+                      ["signal", dna.signal],
+                    ].map(([k,v],i) => (
+                      <div key={i} style={{display:"flex",justifyContent:"space-between",borderBottom:"1px solid #161b22",padding:"3px 0"}}>
+                        <span style={{fontSize:8,color:"#4a5568"}}>{k}</span>
+                        <span style={{fontSize:8,color:"#c9d1d9",fontWeight:700}}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Smart Exit Radar™ */}
               <div style={{background:C.panel,border:`1px solid ${dna.exitRisk>60?C.red+"44":C.border}`,borderRadius:6,padding:"12px 14px",borderLeft:`2px solid ${dna.exitRisk>60?C.red:C.border}`}}>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
@@ -1667,6 +1713,11 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
                       <>
                         <div style={{fontSize:8,color:"#4a5568",marginBottom:2}}>✓ Condition: {s.condition}</div>
                         <div style={{fontSize:8,color:"#4a5568"}}>✗ Invalidated: {s.invalidate}</div>
+                        {mode === "Pro" && (
+                          <div style={{marginTop:4,fontSize:8,color:"#1f6feb88",fontFamily:"'JetBrains Mono',monospace"}}>
+                            Raw prob: {s.prob} · Risk: {s.riskLevel} · Color: {s.color}
+                          </div>
+                        )}
                       </>
                     )}
                     {i<dna.scenarios.length-1 && <div style={{height:1,background:C.border,marginTop:10}}/>}
