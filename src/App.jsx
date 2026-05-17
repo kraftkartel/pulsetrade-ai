@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { createChart, CrosshairMode, LineStyle } from "lightweight-charts";
 
 /* ════════════════════════════════════════════════════════════════
@@ -7,7 +7,23 @@ import { createChart, CrosshairMode, LineStyle } from "lightweight-charts";
    BY TWUMVE  ·  v3.1 ELITE  —  Beginner/Advanced/Pro Edition
 ════════════════════════════════════════════════════════════════ */
 
-const NEWS_API_KEY = "8603087de8be4d5c96370d5adfc3a1ab";
+const GNEWS_KEY = "8603087de8be4d5c96370d5adfc3a1ab";
+
+async function fetchLivePrice(marketId) {
+  const geckoMap = {
+    "BTC/USD":"bitcoin","ETH/USD":"ethereum"
+  };
+  const geckoId = geckoMap[marketId];
+  if (!geckoId) return null;
+  try {
+    const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${geckoId}&vs_currencies=usd&include_24hr_change=true`);
+    const data = await res.json();
+    return {
+      price: data[geckoId]?.usd,
+      change24h: data[geckoId]?.usd_24h_change,
+    };
+  } catch { return null; }
+}
 
 const MARKETS = [
   { id: "BTC/USD",  icon: "₿",  base: 67420,  category: "Crypto",    decimals: 2,  vol24h: "42.1B",  mktCap: "1.32T" },
@@ -98,14 +114,20 @@ const NEWS_POOL = [
 
 /* ─── UTILS ─── */
 async function fetchNews(marketId) {
-  const query = marketId.replace("/", " ");
-  const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&pageSize=5&language=en&apiKey=${NEWS_API_KEY}`;
+  const queryMap = {
+    "BTC/USD":"bitcoin","ETH/USD":"ethereum","GOLD":"gold price",
+    "OIL/USD":"crude oil","EUR/USD":"euro dollar","COFFEE":"coffee commodity"
+  };
+  const q = queryMap[marketId] || marketId;
+  const url = `https://gnews.io/api/v4/search?q=${encodeURIComponent(q)}&lang=en&max=5&apikey=${GNEWS_KEY}`;
   try {
     const res = await fetch(url);
     const data = await res.json();
     if (!data.articles) throw new Error("no articles");
     return data.articles.map(a => ({
-      text: a.title, source: a.source.name, url: a.url,
+      text: a.title,
+      source: a.source.name,
+      url: a.url,
       sentiment: a.title.match(/fall|drop|crash|warn|risk|fear|sell|bear|down|loss/i) ? "bearish" : "bullish",
     }));
   } catch {
@@ -966,6 +988,13 @@ export default function PulseTradeAI() {
   /* PATCH 3: Live DNA refresh every 4 seconds — signals stay current */
   useEffect(() => {
     if (!candles.length || !news.length) return;
+    // Seed with real price for crypto on mount
+    fetchLivePrice(market.id).then(live => {
+      if (live?.price) {
+        setLivePrice(live.price);
+        setPriceChange(parseFloat((live.change24h||0).toFixed(2)));
+      }
+    });
     const interval = setInterval(() => {
       const swings = detectSwingPoints(candles);
       const bos = detectBOSCHOCH(candles, swings);
@@ -1014,36 +1043,51 @@ export default function PulseTradeAI() {
     setLoading(true); setDeepAnalysis("");
     const bullish = news.filter(n=>n.sentiment==="bullish").map(n=>n.text);
     const bearish = news.filter(n=>n.sentiment==="bearish").map(n=>n.text);
-    const prompt = `You are PulseTrade AI™ — an institutional-grade quantitative market intelligence system with proprietary engines: PulseScore™, TrapSense AI™, Smart Exit Radar™, Market DNA™.
+    const prompt = `You are PulseTrade AI™, an institutional quantitative analyst. You reason like a hedge fund desk — probabilistic, data-driven, no filler.
 
-MARKET: ${market.id} @ ${fmt(livePrice,market)} (${priceChange>0?"+":""}${priceChange}%)
-PulseScore™: ${dna.pulseScore}/100
-Signal: ${dna.signal} | Confidence: ${dna.confidence}%
-Market Bias: ${dna.marketBias > 0 ? "BULLISH +" : "BEARISH "}${Math.abs(dna.marketBias).toFixed(0)}
+=== LIVE MARKET DATA ===
+Asset: ${market.id}
+Price: ${fmt(livePrice,market)} (${priceChange>0?"+":""}${priceChange}% session)
+Category: ${market.category}
+PulseScore™: ${dna.pulseScore}/100 (${dna.pulseScore>=65?"STRONG BULL":dna.pulseScore>=50?"MILD BULL":dna.pulseScore>=38?"NEUTRAL":"BEAR"})
+Signal: ${dna.signal} @ ${dna.confidence}% confidence
+Market Bias: ${dna.marketBias > 0 ? "BULLISH" : "BEARISH"} ${Math.abs(dna.marketBias).toFixed(0)}/100
 Trend Strength: ${dna.trendStrength.toFixed(0)}%
+RSI(14): ${dna.lastRSI?.toFixed(1)} (${dna.lastRSI>70?"OVERBOUGHT":dna.lastRSI<30?"OVERSOLD":"NEUTRAL"})
+MACD Histogram: ${dna.lastMACD?.hist?.toFixed(5)} (${dna.lastMACD?.hist>0?"BULLISH":"BEARISH"} momentum)
+Volume Ratio: ${dna.volRatio?.toFixed(2)}x average
+ATR Volatility: ${dna.volPct}%
 Reversal Probability: ${dna.reversalProb}%
-TrapSense™ Trap Probability: ${dna.trapProb}%
-Smart Exit Radar™ Exit Risk: ${dna.exitRisk}%
-Smart Money Bias: ${dna.smBias > 0 ? "BULLISH" : "BEARISH"} (${Math.abs(dna.smBias).toFixed(0)})
-RSI: ${dna.lastRSI?.toFixed(1)}
-Bullish news: ${bullish.slice(0,3).join("; ")}
-Bearish news: ${bearish.slice(0,3).join("; ")}
+TrapSense™ Score: ${dna.trapProb}%
+Smart Exit Risk: ${dna.exitRisk}%
+Smart Money Bias: ${dna.smBias > 0 ? "BUYING" : "SELLING"} (${Math.abs(dna.smBias).toFixed(0)}/100)
+MTF Confluence: ${dna.mtfConfluence ? "CONFIRMED" : "DIVERGENT"}
+Active Traps: ${dna.trapWarnings.map(w=>w.type).join(", ")||"none"}
+Active Exit Signals: ${dna.exitWarnings.map(w=>w.type).join(", ")||"none"}
 
-Respond with exactly 5 numbered lines (no preamble, no markdown):
-1. [MARKET DNA] Current market structure and what it signals right now.
-2. [TRAPSENSE] What trap or manipulation risk exists and why.
-3. [EXIT RADAR] Exit risk assessment — when should traders be cautious.
-4. [SMART MONEY] What institutional/smart money appears to be doing.
-5. [EDGE] Is there a tradeable edge right now? Be brutally honest.
+=== NEWS SENTIMENT ===
+Bullish: ${news.filter(n=>n.sentiment==="bullish").map(n=>n.text).slice(0,2).join(" | ")||"none"}
+Bearish: ${news.filter(n=>n.sentiment==="bearish").map(n=>n.text).slice(0,2).join(" | ")||"none"}
 
-Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
+Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts with its tag:
+1. [STRUCTURE] Describe EMA stack, trend phase, and what price action is telling you right now. Be specific.
+2. [TRAPSENSE] Name the specific trap risk active and the exact mechanism behind it.
+3. [EXIT RADAR] What exit or reversal signal is building, and at what price level or condition should a trader act.
+4. [SMART MONEY] What does the volume/candle data suggest institutions are doing. Are they accumulating or distributing.
+5. [EDGE] One clear verdict: is there a tradeable edge or not. Give a probability and the exact reason why.`;
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:prompt}]}),
+      const GROQ_KEY = import.meta.env.VITE_GROQ_KEY || "";
+      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method:"POST",
+        headers:{"Content-Type":"application/json","Authorization":`Bearer ${GROQ_KEY}`},
+        body: JSON.stringify({
+          model:"llama-3.3-70b-versatile",
+          max_tokens:1000,
+          messages:[{role:"user",content:prompt}]
+        }),
       });
       const data = await res.json();
-      setDeepAnalysis(data.content?.find(b=>b.type==="text")?.text || "Analysis unavailable.");
+      setDeepAnalysis(data.choices?.[0]?.message?.content || "Analysis unavailable.");
     } catch {
       setDeepAnalysis("Deep analysis connection failed. Check Anthropic API key.");
     }
