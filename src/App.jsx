@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createChart, CrosshairMode, LineStyle, PriceScaleMode } from "lightweight-charts";
+const NEWS_API_KEY = "your_key_here";
 
 /* ─── MARKETS ─── */
 const MARKETS = [
@@ -25,8 +26,21 @@ const NEWS_POOL = [
 ];
 
 /* ─── HELPERS ─── */
-function pickNews() {
-  return [...NEWS_POOL].sort(() => Math.random() - 0.5).slice(0, 5);
+async function fetchNews(marketId) {
+  const query = marketId.replace("/", " ");
+  const url = `https://newsapi.org/v2/everything?q=${encodeURIComponent(query)}&sortBy=publishedAt&pageSize=5&language=en&apiKey=${NEWS_API_KEY}`;
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    return data.articles.map(a => ({
+      text: a.title,
+      source: a.source.name,
+      sentiment: a.title.match(/fall|drop|crash|warn|risk|fear|sell|bear|down|loss/i) ? "bearish" : "bullish",
+      url: a.url,
+    }));
+  } catch {
+    return [...NEWS_POOL].sort(() => Math.random() - 0.5).slice(0, 5);
+  }
 }
 
 function fmt(val, market) {
@@ -153,7 +167,7 @@ function TVChart({ market, candles, onPriceUpdate }) {
   const [ohlcInfo, setOhlcInfo] = useState(null);
 
   /* ── INIT CHARTS ── */
-  useEffect(() => {
+  useEffect(() => { (async () => {
     if (!chartContainerRef.current) return;
 
     const CHART_BG = "#0a0c0f";
@@ -497,17 +511,17 @@ export default function PulseTradeAI() {
   const livePriceRef = useRef(livePrice);
   livePriceRef.current = livePrice;
 
-  useEffect(() => {
+  useEffect(() => { (async () => {
     const c = generateOHLCV(market.base);
     setCandles(c);
     const last = c[c.length - 1].close;
     setLivePrice(last);
     setPriceChange(parseFloat(((last - market.base) / market.base * 100).toFixed(2)));
-    const n = pickNews();
+    const n = await fetchNews(market.id);
     setNews(n);
     setSignal(getSignal(c, n));
     setAiReason("");
-  }, [market]);
+  })(); }, [market]);
 
   const handlePriceUpdate = useCallback((p) => {
     setLivePrice(p);
