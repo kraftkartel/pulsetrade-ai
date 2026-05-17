@@ -10,19 +10,21 @@ import { createChart, CrosshairMode, LineStyle } from "lightweight-charts";
 const GNEWS_KEY = import.meta.env.VITE_GNEWS_KEY || "";
 
 async function fetchLivePrice(marketId) {
-  const geckoMap = {
-    "BTC/USD":"bitcoin","ETH/USD":"ethereum"
-  };
-  const geckoId = geckoMap[marketId];
-  if (!geckoId) return null;
+  const binanceMap = { "BTC/USD": "BTCUSDT", "ETH/USD": "ETHUSDT" };
+  const symbol = binanceMap[marketId];
+  if (!symbol) return null;
   try {
-    const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${geckoId}&vs_currencies=usd&include_24hr_change=true`);
-    const data = await res.json();
-    return {
-      price: data[geckoId]?.usd,
-      change24h: data[geckoId]?.usd_24h_change,
-    };
-  } catch { return null; }
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbol=${symbol}`);
+    const d = await res.json();
+    return { price: parseFloat(d.lastPrice), change24h: parseFloat(d.priceChangePercent) };
+  } catch {
+    try {
+      const res2 = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${marketId==="BTC/USD"?"bitcoin":"ethereum"}&vs_currencies=usd&include_24hr_change=true`);
+      const data = await res2.json();
+      const id = marketId==="BTC/USD"?"bitcoin":"ethereum";
+      return { price: data[id]?.usd, change24h: data[id]?.usd_24h_change };
+    } catch { return null; }
+  }
 }
 
 const MARKETS = [
@@ -709,19 +711,43 @@ function TVChart({ market, candles, onPriceUpdate, dna, prediction }) {
     };
   }, [market.id]);
 
-  // Live tick — PATCH: use faster 750ms tick but throttle state updates
+  // Live tick — real Binance price for crypto, simulated for others
   useEffect(() => {
     if (!candleRef.current || !candles.length) return;
     const last = {...candles[candles.length-1]};
-    const t = setInterval(() => {
-      const drift = (Math.random()-0.486)*market.base*0.0016;
-      last.close = parseFloat((last.close+drift).toFixed(6));
+    const binanceMap = { "BTC/USD": "BTCUSDT", "ETH/USD": "ETHUSDT" };
+    const symbol = binanceMap[market.id];
+
+    // Sim tick for non-crypto (keeps chart alive)
+    const simTick = setInterval(() => {
+      const drift = (Math.random()-0.486)*market.base*0.0008;
+      last.close = parseFloat(Math.max(market.base*0.5, last.close+drift).toFixed(6));
       last.high  = Math.max(last.high, last.close);
       last.low   = Math.min(last.low,  last.close);
       candleRef.current?.update({...last});
-      onPriceUpdate?.(last.close);
-    }, 750);
-    return () => clearInterval(t);
+      if (!symbol) onPriceUpdate?.(last.close);
+    }, 800);
+
+    // Real Binance price for crypto
+    let binanceTick;
+    if (symbol) {
+      binanceTick = setInterval(async () => {
+        try {
+          const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
+          const d = await res.json();
+          const price = parseFloat(d.price);
+          if (!isNaN(price)) {
+            last.close = price;
+            last.high  = Math.max(last.high, price);
+            last.low   = Math.min(last.low,  price);
+            candleRef.current?.update({...last});
+            onPriceUpdate?.(price);
+          }
+        } catch {}
+      }, 3000);
+    }
+
+    return () => { clearInterval(simTick); if (binanceTick) clearInterval(binanceTick); };
   }, [candles, market]);
 
   useEffect(() => { ema20Ref.current?.applyOptions({visible:showEMA20}); }, [showEMA20]);
@@ -1193,7 +1219,7 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
           <div>
             <div style={{fontWeight:700,fontSize:13,color:"#e6edf3",letterSpacing:.3,lineHeight:1,display:"flex",alignItems:"center",gap:5}}>
               PulseTrade <span style={{color:C.accent}}>AI</span>
-              <span style={{fontSize:6,background:"#1f6feb22",border:"1px solid #1f6feb44",borderRadius:2,padding:"1px 4px",color:C.accent,letterSpacing:1,fontWeight:600}}>v3.1</span>
+              <span style={{fontSize:6,background:"#1f6feb22",border:"1px solid #1f6feb44",borderRadius:2,padding:"1px 4px",color:C.accent,letterSpacing:1,fontWeight:600}}>v4.0</span>
             </div>
             <div style={{fontSize:7,color:"#30363d",letterSpacing:2,marginTop:1}}>MARKET DNA™ · BY TWUMVE</div>
           </div>
@@ -1416,10 +1442,11 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
           <div style={{display:"flex",borderBottom:`1px solid ${C.border}`,background:"#0a0d13",flexShrink:0,borderTop:`2px solid #1f6feb18`}}>
             {[
               ["chart","Chart"],
+              ["copilot","🤖 Co-Pilot"],
               ["intelligence","Intelligence"],
               ["trapsense","TrapSense AI™"],
               ["news","News"],
-            ["sizing","Position Size"],
+              ["sizing","Position Size"],
             ].map(([id,label]) => (
               <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>{label}</button>
             ))}
@@ -1440,8 +1467,8 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
                 </div>
               )}
               {dna && !analyzing && (
-                <div style={{background:"#0f111a",borderBottom:`1px solid #1e2537`,padding:"5px 14px",flexShrink:0,display:"flex",gap:14,alignItems:"center",borderTop:"1px solid #1a1f2e"}}>
-                  <span style={{fontSize:7,color:"#4a5568",letterSpacing:2,flexShrink:0}}>MARKET DNA™</span>
+                <div style={{background:"#0a0d13",borderBottom:`1px solid #1e2537`,padding:"4px 14px",flexShrink:0,display:"flex",gap:14,alignItems:"center"}}>
+                  <span style={{fontSize:7,color:"#1f6feb55",letterSpacing:2,flexShrink:0,fontWeight:700}}>DNA™</span>
                   {[
                     {l:"BIAS",v:dna.marketBias>0?"BULL":"BEAR",c:dna.marketBias>0?C.green:C.red},
                     {l:"STRENGTH",v:`${dna.trendStrength.toFixed(0)}%`,c:dna.trendStrength>60?C.green:C.amber},
@@ -1466,6 +1493,176 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               <div style={{flex:1,overflow:"hidden"}}>
                 <TVChart market={market} candles={candles} onPriceUpdate={handlePriceUpdate} dna={dna} prediction={prediction}/>
               </div>
+            </div>
+          )}
+
+          {/* ──── CO-PILOT TAB ──── */}
+          {tab==="copilot" && (
+            <div className="fadein" style={{flex:1,overflowY:"auto",padding:"14px 16px",display:"flex",flexDirection:"column",gap:12}}>
+              {!dna ? (
+                <div style={{display:"flex",flexDirection:"column",gap:8,padding:"20px 0"}}>
+                  {[100,70,85,55].map((w,i)=>(
+                    <div key={i} style={{height:10,borderRadius:4,background:"linear-gradient(90deg,#161b22 25%,#21262d 50%,#161b22 75%)",backgroundSize:"200% 100%",animation:"shimmer 1.4s infinite",width:`${w}%`}}/>
+                  ))}
+                </div>
+              ) : (
+                <>
+                  {/* ── HERO: PROBABILITY RING CARD ── */}
+                  <div style={{background:"#0d1117",border:`2px solid ${dna.signalColor}33`,borderRadius:8,padding:"18px 16px",display:"flex",gap:20,alignItems:"center"}}>
+                    {/* Probability rings */}
+                    <div style={{position:"relative",flexShrink:0}}>
+                      <svg width={110} height={110} viewBox="0 0 110 110">
+                        {/* BG ring */}
+                        <circle cx={55} cy={55} r={46} fill="none" stroke="#161b22" strokeWidth={10}/>
+                        {/* Bear arc */}
+                        <circle cx={55} cy={55} r={46} fill="none" stroke="#ff4757" strokeWidth={10}
+                          strokeDasharray={`${2*Math.PI*46 * prediction?.bearProb/100} ${2*Math.PI*46 * (1 - prediction?.bearProb/100)}`}
+                          strokeDashoffset={2*Math.PI*46*0.25} strokeLinecap="round" opacity={0.5}/>
+                        {/* Bull arc */}
+                        <circle cx={55} cy={55} r={46} fill="none" stroke="#00d4a8" strokeWidth={10}
+                          strokeDasharray={`${2*Math.PI*46 * prediction?.bullProb/100} ${2*Math.PI*46}`}
+                          strokeDashoffset={2*Math.PI*46*0.25 + 2*Math.PI*46*(1-prediction?.bullProb/100)} strokeLinecap="round"/>
+                        <text x={55} y={50} textAnchor="middle" fill={dna.signalColor} fontSize={20} fontWeight={700} fontFamily="'JetBrains Mono',monospace">{dna.pulseScore}</text>
+                        <text x={55} y={64} textAnchor="middle" fill="#4a5568" fontSize={8} fontFamily="'JetBrains Mono',monospace">PULSE</text>
+                      </svg>
+                    </div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:8}}>AI CO-PILOT · {market.id} FORECAST</div>
+                      <div style={{display:"flex",gap:10,marginBottom:10}}>
+                        <div style={{flex:1,background:"rgba(0,212,168,0.07)",border:"1px solid #00d4a833",borderRadius:5,padding:"8px 10px",textAlign:"center"}}>
+                          <div style={{fontSize:7,color:"#00d4a888",letterSpacing:1.5,marginBottom:3}}>BULLISH</div>
+                          <div style={{fontSize:22,fontWeight:900,color:"#00d4a8",lineHeight:1}}>{prediction?.bullProb}%</div>
+                        </div>
+                        <div style={{flex:1,background:"rgba(255,71,87,0.07)",border:"1px solid #ff475733",borderRadius:5,padding:"8px 10px",textAlign:"center"}}>
+                          <div style={{fontSize:7,color:"#ff475788",letterSpacing:1.5,marginBottom:3}}>BEARISH</div>
+                          <div style={{fontSize:22,fontWeight:900,color:"#ff4757",lineHeight:1}}>{prediction?.bearProb}%</div>
+                        </div>
+                        <div style={{flex:1,background:"rgba(255,214,0,0.05)",border:"1px solid #ffd60033",borderRadius:5,padding:"8px 10px",textAlign:"center"}}>
+                          <div style={{fontSize:7,color:"#ffd60088",letterSpacing:1.5,marginBottom:3}}>CONFIDENCE</div>
+                          <div style={{fontSize:22,fontWeight:900,color:"#ffd600",lineHeight:1}}>{dna.confidence}%</div>
+                        </div>
+                      </div>
+                      <div style={{fontSize:9,color:"#6e7681",lineHeight:1.7,background:"#161b22",borderRadius:4,padding:"7px 10px",borderLeft:`2px solid ${dna.signalColor}`}}>
+                        {mode==="Beginner"
+                          ? dna.signal==="BUY"
+                            ? `Buyers are in control right now. ${prediction?.bullProb}% chance the market continues higher. Use a stop-loss below current support.`
+                            : dna.signal==="SELL"
+                            ? `Sellers are dominating. ${prediction?.bearProb}% chance price drops further. Avoid new buy trades right now.`
+                            : `Market is undecided — no clear direction. Waiting is your best move until a cleaner signal forms.`
+                          : `${market.id} showing ${Math.abs(dna.marketBias).toFixed(0)}/100 ${dna.marketBias>0?"bullish":"bearish"} bias. MTF ${dna.mtfConfluence?"confluence confirmed":"divergence — reduce size"}. ${dna.confidence}% signal confidence with ${dna.volRatio?.toFixed(2)}x volume ratio.`}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── EXIT WARNING SYSTEM (prominent when risk is high) ── */}
+                  {(dna.exitRisk > 50 || dna.trapProb > 50 || dangerScore > 50) && (
+                    <div style={{background:dangerScore>65?"rgba(255,71,87,0.1)":"rgba(255,214,0,0.07)",border:`2px solid ${dangerScore>65?"#ff4757":"#ffd600"}`,borderRadius:8,padding:"14px 16px",position:"relative",overflow:"hidden"}}>
+                      <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:`linear-gradient(90deg,transparent,${dangerScore>65?"#ff4757":"#ffd600"},transparent)`,animation:"shimmer 2s infinite",backgroundSize:"200% 100%"}}/>
+                      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                        <span className="blink" style={{fontSize:16}}>{dangerScore>65?"⚠️":"⚡"}</span>
+                        <div>
+                          <div style={{fontSize:10,color:dangerScore>65?"#ff4757":"#ffd600",fontWeight:900,letterSpacing:1}}>
+                            {dangerScore>65
+                              ? (mode==="Beginner" ? "EXIT WARNING — HIGH RISK DETECTED" : `EXIT WARNING · DANGER ${dangerScore}/100`)
+                              : (mode==="Beginner" ? "CAUTION — RISK IS BUILDING" : `RISK ELEVATED · ${dangerScore}/100`)}
+                          </div>
+                          <div style={{fontSize:8,color:"#4a5568",marginTop:1}}>
+                            {mode==="Beginner"
+                              ? "The AI detected signals that losses may be coming. Take action."
+                              : `Exit Risk ${dna.exitRisk}% · Trap ${dna.trapProb}% · Reversal ${dna.reversalProb}%`}
+                          </div>
+                        </div>
+                        <div style={{marginLeft:"auto",textAlign:"right"}}>
+                          <div style={{fontSize:28,fontWeight:700,color:dangerScore>65?"#ff4757":"#ffd600",lineHeight:1}}>{dangerScore}</div>
+                          <div style={{fontSize:7,color:"#4a5568"}}>/ 100</div>
+                        </div>
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                        {[
+                          ...dna.exitWarnings.map(w => ({
+                            icon:"📉", text: mode==="Beginner" ? (BEGINNER_TRANSLATIONS[w.type]?.desc || w.desc) : w.desc,
+                            severity: w.severity
+                          })),
+                          ...dna.trapWarnings.map(w => ({
+                            icon:"🎯", text: mode==="Beginner" ? (BEGINNER_TRANSLATIONS[w.type]?.desc || w.desc) : w.desc,
+                            severity: w.severity
+                          })),
+                        ].slice(0,4).map((item,i) => (
+                          <div key={i} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"5px 8px",background:"rgba(0,0,0,0.3)",borderRadius:4}}>
+                            <span style={{fontSize:10,flexShrink:0}}>{item.icon}</span>
+                            <span style={{fontSize:8,color:"#c9d1d9",lineHeight:1.6}}>{item.text}</span>
+                            <span style={{marginLeft:"auto",fontSize:7,color:item.severity==="HIGH"?"#ff4757":"#ffd600",fontWeight:700,flexShrink:0}}>{item.severity}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{marginTop:10,padding:"8px 10px",background:"rgba(0,0,0,0.3)",borderRadius:5,fontSize:8,color:"#8b949e",lineHeight:1.7}}>
+                        <b style={{color:dangerScore>65?"#ff4757":"#ffd600"}}>Suggested action: </b>
+                        {mode==="Beginner"
+                          ? dangerScore>65
+                            ? "Close or reduce your position. Avoid entering new trades right now. Wait for conditions to improve."
+                            : "Trade smaller size than normal. Set tighter stop-losses. Be ready to exit quickly."
+                          : dangerScore>65
+                            ? "Reduce position to 25-50%. Tighten stop to below last swing low. Avoid pyramiding."
+                            : "Reduce new entries. Hold existing positions with tighter stops. Monitor volume for confirmation."}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── WHAT THE AI SEES ── */}
+                  <div style={{background:"#161b22",border:"1px solid #21262d",borderRadius:7,padding:"12px 14px"}}>
+                    <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:10,display:"flex",alignItems:"center",gap:5}}>
+                      <span className="blink" style={{color:"#1f6feb"}}>●</span>
+                      {mode==="Beginner" ? "WHY THE AI THINKS THIS" : "SIGNAL REASONING · LIVE"}
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:0}}>
+                      {dna.aiReasons.map((r,i) => (
+                        <div key={i} style={{display:"flex",gap:10,padding:"7px 0",borderBottom:i<dna.aiReasons.length-1?"1px solid #0d1117":"none",alignItems:"flex-start"}}>
+                          <div style={{width:32,flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
+                            <span style={{fontSize:11,color:"#1f6feb44"}}>{r.icon}</span>
+                            <span style={{fontSize:6,color:"#30363d",letterSpacing:1,textAlign:"center"}}>{r.label}</span>
+                          </div>
+                          <span style={{fontSize:9,color:"#8b949e",lineHeight:1.7,flex:1}}>{r.content}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ── NEXT MOVE SCENARIOS ── */}
+                  <div style={{background:"#161b22",border:"1px solid #21262d",borderRadius:7,padding:"12px 14px"}}>
+                    <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:10}}>
+                      {mode==="Beginner" ? "3 THINGS THAT COULD HAPPEN NEXT" : "SCENARIO PROBABILITIES · " + market.id}
+                    </div>
+                    {dna.scenarios.map((s,i) => (
+                      <div key={i} style={{display:"flex",alignItems:"center",gap:10,marginBottom:i<dna.scenarios.length-1?8:0,padding:"7px 10px",background:"#0d1117",borderRadius:4,border:`1px solid ${s.color}22`}}>
+                        <div style={{width:28,height:28,borderRadius:4,background:s.color+"15",border:`1px solid ${s.color}44`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,color:s.color,fontWeight:700,flexShrink:0}}>{s.id}</div>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontSize:9,color:"#c9d1d9",fontWeight:600,marginBottom:3}}>{s.label}</div>
+                          <div style={{height:3,background:"#21262d",borderRadius:2,overflow:"hidden"}}>
+                            <div style={{height:"100%",width:`${s.prob}%`,background:s.color,borderRadius:2,transition:"width 1.2s ease"}}/>
+                          </div>
+                        </div>
+                        <div style={{fontSize:14,color:s.color,fontWeight:900,flexShrink:0}}>{s.prob}%</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* ── DEEP ANALYSIS SECTION ── */}
+                  {deepAnalysis && (
+                    <div style={{background:"#0d1117",border:"1px solid #1f6feb22",borderRadius:7,padding:"12px 14px",borderLeft:"2px solid #1f6feb"}}>
+                      <div style={{fontSize:7,color:"#1f6feb",letterSpacing:2.5,marginBottom:8}}>● DEEP ANALYSIS · {market.id}</div>
+                      {deepAnalysis.split("\n").filter(l=>l.trim()).map((line,i) => (
+                        <div key={i} style={{display:"flex",gap:8,marginBottom:5,alignItems:"flex-start",paddingBottom:5,borderBottom:i<4?"1px solid #161b22":"none"}}>
+                          <span style={{fontSize:7,color:"#1f6feb33",flexShrink:0,marginTop:2,minWidth:14}}>{String(i+1).padStart(2,"0")}</span>
+                          <span style={{fontSize:9,color:"#6e7681",lineHeight:1.7}}>{line.replace(/^\[.*?\]\s*/,"").replace(/^\d+\.\s*/,"")}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <button className="analyze-btn" onClick={runDeepAnalysis} disabled={loading} style={{marginTop:2}}>
+                    {loading ? <><span className="spinner" style={{width:10,height:10,borderWidth:1.5}}/> Scanning…</> : "🤖 Run Deep Market Analysis"}
+                  </button>
+                </>
+              )}
             </div>
           )}
 
