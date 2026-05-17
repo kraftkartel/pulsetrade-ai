@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { createChart, CrosshairMode, LineStyle } from "lightweight-charts";
 
 /* ════════════════════════════════════════════════════════════════
@@ -1152,7 +1152,7 @@ function TVChart({ market, candles, onPriceUpdate, dna, prediction }) {
 /* ═══════════════════════════════════════════════════
    MAIN APP — PULSETRADE AI™ v3.1
 ═══════════════════════════════════════════════════ */
-export default function PulseTradeAI() {
+function PulseTradeAIInner() {
   const [market,      setMarket]      = useState(() => {
     const saved = lsGet("market", "BTC/USD");
     return MARKETS.find(m => m.id === saved) || MARKETS[0];
@@ -1187,6 +1187,19 @@ export default function PulseTradeAI() {
 
   // Persist last selected market
   useEffect(() => { lsSet("market", market.id); }, [market]);
+
+  /* PATCH 11: Throttled price update — max 2x/sec to prevent lag */
+  const lastPriceRef = useRef(0);
+  const handlePriceUpdate = useCallback((p) => {
+    const now = Date.now();
+    if (now - lastPriceRef.current < 500) return;
+    lastPriceRef.current = now;
+    setLivePrice(prev => {
+      if (Math.abs(p - prev) / prev < 0.00001) return prev;
+      return p;
+    });
+    setMarketPrices(prev => ({...prev, [market.id]:p}));
+  }, [market.id]);
 
   const [marketPrices,setMarketPrices]= useState(() => Object.fromEntries(MARKETS.map(m=>[m.id,m.base])));
   const [sparks, setSparks] = useState(() => MARKETS.map(m => Array.from({length:24},()=>m.base*(0.95+Math.random()*0.1))));
@@ -1282,7 +1295,7 @@ export default function PulseTradeAI() {
 
   // Keep onPriceUpdate stable in a ref so WS can always call latest version
   const onPriceUpdateRef = useRef(null);
-  useEffect(() => { onPriceUpdateRef.current = handlePriceUpdate; }, [handlePriceUpdate]);
+  useEffect(() => { onPriceUpdateRef.current = handlePriceUpdate; });
 
   /* ── Commentary + Pre-Loss refresh every 2 seconds ── */
   useEffect(() => {
@@ -1349,20 +1362,6 @@ export default function PulseTradeAI() {
     return () => clearInterval(interval);
   }, [market.id, candles, news]);
 
-  /* PATCH 11: Throttled price update — max 2x/sec to prevent lag */
-  const lastPriceRef = useRef(0);
-  const handlePriceUpdate = useCallback((p) => {
-    const now = Date.now();
-    // WS updates can come fast — throttle to 500ms for state
-    if (now - lastPriceRef.current < 500) return;
-    lastPriceRef.current = now;
-    setLivePrice(prev => {
-      // Only update if meaningfully different (>0.001%)
-      if (Math.abs(p - prev) / prev < 0.00001) return prev;
-      return p;
-    });
-    setMarketPrices(prev => ({...prev, [market.id]:p}));
-  }, [market.id]);
 
   async function runDeepAnalysis() {
     if (!dna) return;
@@ -2632,4 +2631,23 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
       </div>
     </div>
   );
+}
+
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  componentDidCatch(e) { this.setState({ error: e }); }
+  render() {
+    if (this.state.error) return (
+      <div style={{background:"#0d1117",color:"#ff4757",fontFamily:"monospace",padding:40,height:"100vh"}}>
+        <h2>PulseTrade crashed — check console</h2>
+        <pre style={{color:"#ffd600",marginTop:16,fontSize:12}}>{this.state.error?.message}</pre>
+        <pre style={{color:"#4a5568",marginTop:8,fontSize:10}}>{this.state.error?.stack}</pre>
+      </div>
+    );
+    return this.props.children;
+  }
+}
+
+export default function PulseTradeAI() {
+  return <ErrorBoundary><PulseTradeAIInner /></ErrorBoundary>;
 }
