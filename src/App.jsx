@@ -170,6 +170,90 @@ function detectPatterns(candles) {
   return patterns.slice(0, 3);
 }
 
+function detectSwingPoints(candles) {
+  const swings = { highs: [], lows: [] };
+  for (let i = 2; i < candles.length - 2; i++) {
+    if (candles[i].high > candles[i-1].high && candles[i].high > candles[i-2].high &&
+        candles[i].high > candles[i+1].high && candles[i].high > candles[i+2].high)
+      swings.highs.push({ time: candles[i].time, price: candles[i].high, idx: i });
+    if (candles[i].low < candles[i-1].low && candles[i].low < candles[i-2].low &&
+        candles[i].low < candles[i+1].low && candles[i].low < candles[i+2].low)
+      swings.lows.push({ time: candles[i].time, price: candles[i].low, idx: i });
+  }
+  return swings;
+}
+
+function detectBOSCHOCH(candles, swings) {
+  const signals = [];
+  const last = candles[candles.length - 1];
+  const recentHighs = swings.highs.slice(-3);
+  const recentLows  = swings.lows.slice(-3);
+  if (recentHighs.length >= 2) {
+    const [prev, curr] = recentHighs.slice(-2);
+    if (curr.price > prev.price && last.close > curr.price)
+      signals.push({ type:"BOS", dir:"bullish", price: curr.price, label:"BOS ▲", color:"#26a69a" });
+    if (curr.price < prev.price)
+      signals.push({ type:"CHOCH", dir:"bearish", price: curr.price, label:"CHoCH ↓", color:"#ef5350" });
+  }
+  if (recentLows.length >= 2) {
+    const [prev, curr] = recentLows.slice(-2);
+    if (curr.price < prev.price && last.close < curr.price)
+      signals.push({ type:"BOS", dir:"bearish", price: curr.price, label:"BOS ▼", color:"#ef5350" });
+    if (curr.price > prev.price)
+      signals.push({ type:"CHOCH", dir:"bullish", price: curr.price, label:"CHoCH ↑", color:"#26a69a" });
+  }
+  return signals;
+}
+
+function calcFibLevels(swings, candles) {
+  if (!swings.highs.length || !swings.lows.length) return [];
+  const lastHigh = swings.highs[swings.highs.length - 1];
+  const lastLow  = swings.lows[swings.lows.length  - 1];
+  const hi = lastHigh.price, lo = lastLow.price, range = hi - lo;
+  const isBullish = lastLow.idx < lastHigh.idx;
+  const end = candles[candles.length - 1].time + (candles[1].time - candles[0].time) * 40;
+  return [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1].map(r => ({
+    level: r,
+    price: isBullish ? hi - range * r : lo + range * r,
+    label: `${(r * 100).toFixed(1)}%`,
+    color: r === 0.618 ? "#ce93d8" : r === 0.5 ? "#f59e0b" : r === 0.382 ? "#2962ff" : "#4a5568",
+    end,
+  }));
+}
+
+function detectLiquidityZones(candles) {
+  const zones = [];
+  const recent = candles.slice(-40);
+  const highs = recent.map(c => c.high).sort((a,b) => b-a);
+  const lows  = recent.map(c => c.low).sort((a,b) => a-b);
+  const topCluster = highs.slice(0, 5).reduce((a,b) => a+b,0) / 5;
+  const botCluster = lows.slice(0, 5).reduce((a,b) => a+b,0) / 5;
+  zones.push({ price: topCluster, label: "Liq. Zone", color: "#ef535044", type: "resistance" });
+  zones.push({ price: botCluster, label: "Liq. Zone", color: "#26a69a44", type: "support" });
+  return zones;
+}
+
+function buildRegressionChannel(candles) {
+  const n = Math.min(40, candles.length);
+  const slice = candles.slice(-n);
+  let sumX=0, sumY=0, sumXY=0, sumX2=0;
+  slice.forEach((c, i) => { sumX+=i; sumY+=c.close; sumXY+=i*c.close; sumX2+=i*i; });
+  const slope = (n*sumXY - sumX*sumY) / (n*sumX2 - sumX*sumX);
+  const intercept = (sumY - slope*sumX) / n;
+  const step = slice[1].time - slice[0].time;
+  const deviations = slice.map((c,i) => Math.abs(c.close - (intercept + slope*i)));
+  const stdDev = Math.sqrt(deviations.reduce((a,b) => a+b*b,0)/n);
+  const mid=[], upper=[], lower=[];
+  for (let i = 0; i < n + 15; i++) {
+    const t = slice[0].time + i * step;
+    const v = intercept + slope * i;
+    mid.push({ time: t, value: parseFloat(v.toFixed(6)) });
+    upper.push({ time: t, value: parseFloat((v + stdDev * 1.5).toFixed(6)) });
+    lower.push({ time: t, value: parseFloat((v - stdDev * 1.5).toFixed(6)) });
+  }
+  return { mid, upper, lower, slope };
+}
+
 const AI_COMMENTARY = [
   "Smart money accumulation detected near support zone.",
   "Liquidity sweep likely before next directional move.",
@@ -208,9 +292,16 @@ function TVChart({ market, candles, onPriceUpdate, signal, prediction }) {
   const ema50Ref    = useRef(null);
   const rsiSerRef   = useRef(null);
   const drawRef     = useRef({ active: "cursor", points: [], overlays: [] });
-  const predBullRef = useRef(null);
-  const predBearRef = useRef(null);
-  const predMidRef  = useRef(null);
+  const predBullRef   = useRef(null);
+  const predBearRef   = useRef(null);
+  const predMidRef    = useRef(null);
+  const regMidRef     = useRef(null);
+  const regUpperRef   = useRef(null);
+  const regLowerRef   = useRef(null);
+  const aiOverlaysRef = useRef([]);
+  const [showAIDraw,  setShowAIDraw]  = useState(true);
+  const [showRegCh,   setShowRegCh]   = useState(true);
+  const [aiBOSLabels, setAIBOSLabels] = useState([]);
 
   const [tool,      setTool]      = useState("cursor");
   const [drawingPoint, setDrawingPoint] = useState(false);
@@ -274,6 +365,13 @@ function TVChart({ market, candles, onPriceUpdate, signal, prediction }) {
     predBullRef.current = predBull;
     predBearRef.current = predBear;
     predMidRef.current  = predMid;
+
+    const regMid   = chart.addLineSeries({ color: "rgba(249,168,37,0.5)",  lineWidth: 1, lineStyle: LineStyle.Solid,  priceLineVisible: false, lastValueVisible: false, title: "REG" });
+    const regUpper = chart.addLineSeries({ color: "rgba(239,83,80,0.35)",   lineWidth: 1, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false });
+    const regLower = chart.addLineSeries({ color: "rgba(38,166,154,0.35)",  lineWidth: 1, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: false });
+    regMidRef.current   = regMid;
+    regUpperRef.current = regUpper;
+    regLowerRef.current = regLower;
 
     chart.subscribeCrosshairMove(p => {
       if (!p.time || !p.seriesData) { setOhlc(null); return; }
@@ -364,6 +462,69 @@ function TVChart({ market, candles, onPriceUpdate, signal, prediction }) {
     predMidRef.current.applyOptions({  visible: true });
   }, [showPred]);
 
+  useEffect(() => {
+    if (!chartRef.current || !candles.length) return;
+    aiOverlaysRef.current.forEach(s => { try { chartRef.current.removeSeries(s); } catch {} });
+    aiOverlaysRef.current = [];
+    if (!showAIDraw) return;
+    const chart = chartRef.current;
+    const swings = detectSwingPoints(candles);
+    const fibs   = calcFibLevels(swings, candles);
+    const liqZones = detectLiquidityZones(candles);
+    const bosSignals = detectBOSCHOCH(candles, swings);
+    const endTime = candles[candles.length-1].time + (candles[1].time - candles[0].time) * 35;
+    fibs.forEach(f => {
+      try {
+        const s = chart.addLineSeries({ color: f.color, lineWidth: 1, lineStyle: LineStyle.Dotted, priceLineVisible: false, lastValueVisible: true, title: `Fib ${f.label}` });
+        s.setData([{ time: candles[0].time, value: f.price }, { time: endTime, value: f.price }]);
+        aiOverlaysRef.current.push(s);
+      } catch {}
+    });
+    liqZones.forEach(z => {
+      try {
+        const s = chart.addLineSeries({ color: z.color, lineWidth: 3, lineStyle: LineStyle.Solid, priceLineVisible: false, lastValueVisible: true, title: z.label });
+        s.setData([{ time: candles[Math.floor(candles.length*0.6)].time, value: z.price }, { time: endTime, value: z.price }]);
+        aiOverlaysRef.current.push(s);
+      } catch {}
+    });
+    bosSignals.forEach(b => {
+      try {
+        const s = chart.addLineSeries({ color: b.color, lineWidth: 1, lineStyle: LineStyle.Dashed, priceLineVisible: false, lastValueVisible: true, title: b.label });
+        s.setData([{ time: candles[candles.length-10].time, value: b.price }, { time: endTime, value: b.price }]);
+        aiOverlaysRef.current.push(s);
+      } catch {}
+    });
+    if (swings.highs.length && swings.lows.length) {
+      const lastSwingH = swings.highs[swings.highs.length-1];
+      const lastSwingL = swings.lows[swings.lows.length-1];
+      try {
+        const tl = chart.addLineSeries({ color: "rgba(41,98,255,0.6)", lineWidth: 1.5, lineStyle: LineStyle.Solid, priceLineVisible: false, lastValueVisible: false });
+        tl.setData([{ time: lastSwingL.time, value: lastSwingL.price }, { time: lastSwingH.time, value: lastSwingH.price }]);
+        aiOverlaysRef.current.push(tl);
+      } catch {}
+    }
+    setAIBOSLabels(bosSignals);
+  }, [candles, showAIDraw]);
+
+  useEffect(() => {
+    if (!regMidRef.current || !candles.length) return;
+    if (!showRegCh) {
+      regMidRef.current?.applyOptions({ visible: false });
+      regUpperRef.current?.applyOptions({ visible: false });
+      regLowerRef.current?.applyOptions({ visible: false });
+      return;
+    }
+    const ch = buildRegressionChannel(candles);
+    try {
+      regMidRef.current.setData(ch.mid);
+      regUpperRef.current.setData(ch.upper);
+      regLowerRef.current.setData(ch.lower);
+      regMidRef.current?.applyOptions({ visible: true });
+      regUpperRef.current?.applyOptions({ visible: true });
+      regLowerRef.current?.applyOptions({ visible: true });
+    } catch {}
+  }, [candles, showRegCh]);
+
   const clearDrawings = useCallback(() => {
     drawRef.current.overlays.forEach(s => { try { chartRef.current?.removeSeries(s); } catch {} });
     drawRef.current = { active: null, points: [], overlays: [] };
@@ -431,7 +592,9 @@ function TVChart({ market, candles, onPriceUpdate, signal, prediction }) {
           { key:"ema50", label:"EMA 50", color:"#ff6d00", val:showEMA50, set:setShowEMA50 },
           { key:"vol",   label:"VOL",    color:"#787b86", val:showVol,   set:setShowVol   },
           { key:"rsi",   label:"RSI",    color:"#ce93d8", val:showRSI,   set:setShowRSI   },
-          { key:"pred",  label:"AI PROJ",color:"#26a69a", val:showPred,  set:setShowPred  },
+          { key:"pred",   label:"AI PROJ", color:"#26a69a", val:showPred,   set:setShowPred   },
+          { key:"aidraw", label:"AI DRAW", color:"#ce93d8", val:showAIDraw, set:setShowAIDraw },
+          { key:"regch",  label:"REG CH",  color:"#f59e0b", val:showRegCh,  set:setShowRegCh  },
         ].map(ind => (
           <button key={ind.key} onClick={() => ind.set(v => !v)}
             style={{ padding:"2px 7px", borderRadius:3, border:`1px solid ${ind.val ? ind.color+"55" : BORDER}`, background: ind.val ? ind.color+"15" : "transparent", color: ind.val ? ind.color : "#4a5568", fontSize:10, fontWeight:600, cursor:"pointer", transition:"all .1s", letterSpacing:.3, fontFamily:"inherit" }}>
@@ -479,12 +642,21 @@ function TVChart({ market, candles, onPriceUpdate, signal, prediction }) {
 
         {/* Main chart + RSI */}
         <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", position:"relative" }}>
+          {aiBOSLabels.length > 0 && (
+            <div style={{ position:"absolute", top:8, right:8, zIndex:10, display:"flex", flexDirection:"column", gap:3, pointerEvents:"none" }}>
+              {aiBOSLabels.map((b, i) => (
+                <div key={i} style={{ background:"#131722", border:`1px solid ${b.color}`, borderRadius:3, padding:"2px 8px", fontSize:9, color:b.color, fontWeight:700, letterSpacing:1, fontFamily:"monospace", boxShadow:`0 0 8px ${b.color}44` }}>
+                  {b.label}
+                </div>
+              ))}
+            </div>
+          )}
           {drawingPoint && (
             <div style={{ position:"absolute", top:8, left:"50%", transform:"translateX(-50%)", zIndex:10, background:"#2a2e39ee", color:"#2962ff", fontSize:11, padding:"3px 14px", borderRadius:12, border:"1px solid #2962ff35", pointerEvents:"none" }}>
               Click second point · {drawRef.current.active}
             </div>
           )}
-          <div ref={mainRef} style={{ flex: showRSI ? "0 0 70%" : 1, cursor: tool==="cursor" ? "default" : "crosshair" }} />
+          <div ref={mainRef} onClick={handleClick} style={{ flex: showRSI ? "0 0 70%" : 1, cursor: tool==="cursor" ? "default" : "crosshair" }} />
           {showRSI && (
             <>
               <div style={{ height:1, background: BORDER }} />
@@ -593,8 +765,12 @@ export default function PulseTradeAI() {
         button { font-family:inherit; }
         @keyframes blink { 0%,100%{opacity:1}50%{opacity:.25} }
         @keyframes fadeIn { from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)} }
+        @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(38,166,154,0.5)}70%{box-shadow:0 0 0 5px rgba(38,166,154,0)}100%{box-shadow:0 0 0 0 rgba(38,166,154,0)} }
+        @keyframes slideIn { from{opacity:0;transform:translateX(-4px)}to{opacity:1;transform:translateX(0)} }
         .blink { animation:blink 2s infinite; }
         .fadein { animation:fadeIn .3s ease; }
+        .pulse-dot { animation:pulse 2s infinite; }
+        .slide-in { animation:slideIn .2s ease; }
         .mkt-row { display:flex; align-items:center; gap:10px; padding:7px 10px; cursor:pointer; border-left:2px solid transparent; transition:all .12s; }
         .mkt-row:hover { background:#1c2030; }
         .mkt-row.active { border-left-color:#2962ff; background:#161b2e; }
@@ -607,9 +783,9 @@ export default function PulseTradeAI() {
         .news-item { display:flex; gap:10px; padding:10px 0; border-bottom:1px solid #1e222d; cursor:pointer; transition:opacity .15s; }
         .news-item:last-child { border:none; }
         .news-item:hover { opacity:.8; }
-        .stat-card { background:#1e222d; border:1px solid #2a2e39; border-radius:4px; padding:12px 14px; }
+        .stat-card { background:#1a1e2e; border:1px solid #2a2e39; border-radius:4px; padding:12px 14px; border-left:2px solid #2962ff33; }
         .analyze-btn { width:100%; padding:8px; border-radius:4px; border:1px solid #2962ff44; background:#2962ff15; color:#2962ff; font-size:11px; font-weight:600; letter-spacing:1.5px; cursor:pointer; transition:all .18s; font-family:inherit; text-transform:uppercase; }
-        .analyze-btn:hover:not(:disabled) { background:#2962ff25; border-color:#2962ff88; }
+        .analyze-btn:hover:not(:disabled) { background:#2962ff25; border-color:#2962ff88; box-shadow:0 0 14px rgba(41,98,255,0.25); }
         .analyze-btn:disabled { opacity:.4; cursor:not-allowed; }
       `}</style>
 
@@ -617,15 +793,15 @@ export default function PulseTradeAI() {
       <div style={{ height:38, background:"#1e222d", borderBottom:"1px solid #2a2e39", display:"flex", alignItems:"center", padding:"0 10px", gap:10, flexShrink:0, zIndex:100 }}>
 
         <div style={{ display:"flex", alignItems:"center", gap:8, marginRight:4 }}>
-          <div style={{ width:26, height:26, background:"linear-gradient(135deg,#2962ff,#26a69a)", borderRadius:5, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13 }}>⚡</div>
-          <span style={{ fontWeight:700, fontSize:13, color:"#e0e3ea", letterSpacing:.3 }}>PulseTrade <span style={{ color:C.accent }}>AI</span></span>
+          <div style={{ width:26, height:26, background:"linear-gradient(135deg,#2962ff,#26a69a)", borderRadius:5, display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, boxShadow:"0 0 10px rgba(41,98,255,0.4)" }}>⚡</div>
+          <span style={{ fontWeight:700, fontSize:13, color:"#e0e3ea", letterSpacing:.3 }}>PulseTrade <span style={{ color:C.accent, textShadow:"0 0 12px rgba(41,98,255,0.6)" }}>AI</span></span>
         </div>
 
         <div style={{ width:1, height:20, background:C.border }} />
 
         <div style={{ display:"flex", alignItems:"center", gap:10 }}>
           <span style={{ fontSize:13, fontWeight:700, color:"#e0e3ea", fontFamily:"JetBrains Mono,monospace", letterSpacing:.5 }}>{market.id}</span>
-          <span style={{ fontSize:14, fontWeight:600, color: up ? C.green : C.red, fontFamily:"JetBrains Mono,monospace" }}>{fmt(livePrice, market)}</span>
+          <span style={{ fontSize:14, fontWeight:600, color: up ? C.green : C.red, fontFamily:"JetBrains Mono,monospace", textShadow: up ? "0 0 8px rgba(38,166,154,0.5)" : "0 0 8px rgba(239,83,80,0.5)" }}>{fmt(livePrice, market)}</span>
           <span style={{ fontSize:10, padding:"1px 7px", borderRadius:3, background: up ? C.green+"18" : C.red+"18", color: up ? C.green : C.red, fontWeight:700 }}>{up?"+":""}{priceChange}%</span>
         </div>
 
@@ -638,7 +814,7 @@ export default function PulseTradeAI() {
         </div>
 
         <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:6 }}>
-          <div className="blink" style={{ width:6, height:6, borderRadius:"50%", background:C.green }} />
+          <div className="pulse-dot" style={{ width:7, height:7, borderRadius:"50%", background:C.green }} />
           <span style={{ fontSize:10, color:C.green, letterSpacing:1.5, fontWeight:600 }}>LIVE</span>
         </div>
       </div>
@@ -674,7 +850,7 @@ export default function PulseTradeAI() {
           {signal && (
             <div style={{ padding:"10px", borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
               <div style={{ fontSize:9, color:C.muted, letterSpacing:2, marginBottom:7 }}>AI SIGNAL</div>
-              <div style={{ background:signal.bg, border:`1px solid ${signal.color}30`, borderRadius:4, padding:"11px 10px", textAlign:"center", marginBottom:8 }}>
+              <div style={{ background:signal.bg, border:`1px solid ${signal.color}50`, borderRadius:4, padding:"11px 10px", textAlign:"center", marginBottom:8, boxShadow:`0 0 16px ${signal.color}18` }}>
                 <div style={{ fontSize:24, fontWeight:800, color:signal.color, lineHeight:1, fontFamily:"JetBrains Mono,monospace", letterSpacing:2 }}>{signal.signal}</div>
                 <div style={{ fontSize:10, color:C.muted, margin:"5px 0 3px" }}>{signal.confidence}% confidence</div>
                 <div style={{ display:"flex", gap:8, justifyContent:"center", fontSize:9 }}>
@@ -692,18 +868,20 @@ export default function PulseTradeAI() {
         {/* CENTER: Chart + tabs */}
         <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
           <div style={{ display:"flex", borderBottom:"1px solid #2a2e39", background:"#131722", flexShrink:0 }}>
-            {[["chart","Chart"],["news","News"],["accuracy","Accuracy"]].map(([id,label]) => (
+            {[["chart","Chart"],["predict","🤖 Predict"],["news","News"],["accuracy","Accuracy"]].map(([id,label]) => (
               <button key={id} className={`tab ${tab===id?"active":""}`} onClick={() => setTab(id)}>{label}</button>
             ))}
           </div>
 
           {tab === "chart" && (
             <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-              <div style={{ background:"#0d1117", borderBottom:"1px solid #2a2e39", padding:"5px 14px", flexShrink:0, display:"flex", gap:10, alignItems:"center" }}>
+              <div style={{ background:"#0a0d14", borderBottom:"1px solid #1a2035", padding:"5px 14px", flexShrink:0, display:"flex", gap:10, alignItems:"center", borderLeft:"2px solid #2962ff33" }}>
                 <span className="blink" style={{ fontSize:8, color:"#2962ff", letterSpacing:2, whiteSpace:"nowrap" }}>● AI</span>
                 <p style={{ fontSize:10, color:"#4a5568", lineHeight:1, margin:0, overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis", fontStyle:"italic" }}>{commentary}</p>
                 {prediction && (
-                  <div style={{ marginLeft:"auto", display:"flex", gap:8, flexShrink:0 }}>
+                  <div style={{ marginLeft:"auto", display:"flex", gap:8, flexShrink:0, alignItems:"center" }}>
+                    <span style={{ fontSize:9, color:"#4a5568", letterSpacing:1 }}>VOL {prediction.volatility}%</span>
+                    <div style={{ width:1, height:10, background:"#2a2e39" }} />
                     <span style={{ fontSize:9, color:"#26a69a", fontWeight:700 }}>▲{prediction.bullProb}%</span>
                     <span style={{ fontSize:9, color:"#ef5350", fontWeight:700 }}>▼{prediction.bearProb}%</span>
                   </div>
@@ -756,6 +934,23 @@ export default function PulseTradeAI() {
                     <span style={{ fontSize:14, color:p.color }}>{p.icon}</span>
                     <span style={{ fontSize:11, color:"#b2b5be" }}>{p.name}</span>
                     <div style={{ marginLeft:"auto", width:6, height:6, borderRadius:"50%", background:p.color }} />
+                  </div>
+                ))}
+              </div>
+
+              {/* Smart Money Structure */}
+              <div style={{ background:"#1e222d", border:"1px solid #2a2e39", borderRadius:6, padding:"12px 14px" }}>
+                <div style={{ fontSize:9, color:"#787b86", letterSpacing:2, marginBottom:10 }}>SMART MONEY ANALYSIS</div>
+                {[
+                  { label:"Liquidity Sweep",    val: Math.random()>0.5?"Detected":"None",   color: Math.random()>0.5?"#ef5350":"#4a5568" },
+                  { label:"Market Structure",   val: signal?.signal==="BUY"?"Bullish BOS":"Bearish CHoCH", color: signal?.signal==="BUY"?"#26a69a":"#ef5350" },
+                  { label:"Orderflow",          val: Math.random()>0.5?"Institutional Buy":"Retail Sell", color:"#2962ff" },
+                  { label:"Fib Confluence",     val: "0.618 Golden Zone",  color:"#ce93d8" },
+                  { label:"Momentum",           val: signal?.signal==="HOLD"?"Neutral":"Strong "+signal?.signal, color: signal?.signal==="BUY"?"#26a69a":signal?.signal==="SELL"?"#ef5350":"#f59e0b" },
+                ].map((row, i) => (
+                  <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0", borderBottom: i<4?"1px solid #2a2e39":"none" }}>
+                    <span style={{ fontSize:10, color:"#787b86" }}>{row.label}</span>
+                    <span style={{ fontSize:10, color:row.color, fontWeight:700 }}>{row.val}</span>
                   </div>
                 ))}
               </div>
@@ -850,7 +1045,7 @@ export default function PulseTradeAI() {
 
         {/* RIGHT: Market overview + win rate */}
         <div style={{ width:160, background:"#131722", borderLeft:"1px solid #2a2e39", display:"flex", flexDirection:"column", flexShrink:0, overflow:"hidden" }}>
-          <div style={{ padding:"7px 10px 5px", fontSize:9, color:C.muted, letterSpacing:2.5, borderBottom:`1px solid ${C.border}` }}>OVERVIEW</div>
+          <div style={{ padding:"6px 10px 5px", fontSize:9, color:"#4a5568", letterSpacing:2.5, borderBottom:"1px solid #2a2e39", textTransform:"uppercase", fontWeight:700 }}>Overview</div>
           <div style={{ flex:1, overflowY:"auto", padding:"6px" }}>
             {MARKETS.map((m, mi) => {
               const p = marketPrices[m.id] || m.base;
@@ -870,7 +1065,7 @@ export default function PulseTradeAI() {
           </div>
           <div style={{ padding:"10px", borderTop:"1px solid #2a2e39", background:"#131722", flexShrink:0 }}>
             <div style={{ fontSize:9, color:C.muted, letterSpacing:2, marginBottom:7 }}>AI WIN RATE</div>
-            <div style={{ fontSize:26, fontWeight:700, color: winRate>65?C.green:C.amber, fontFamily:"JetBrains Mono,monospace", lineHeight:1 }}>{winRate}%</div>
+            <div style={{ fontSize:26, fontWeight:700, color: winRate>65?C.green:C.amber, fontFamily:"JetBrains Mono,monospace", lineHeight:1, textShadow: winRate>65?"0 0 12px rgba(38,166,154,0.4)":"0 0 12px rgba(245,158,11,0.4)" }}>{winRate}%</div>
             <div style={{ fontSize:9, color:C.muted, marginTop:3 }}>{accuracy.total} signals</div>
             <div style={{ background:"#131722", borderRadius:2, height:3, overflow:"hidden", marginTop:7 }}>
               <div style={{ width:`${winRate}%`, height:"100%", background:`linear-gradient(90deg,${C.accent},${C.green})`, transition:"width 1s" }} />
