@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { createChart, CrosshairMode, LineStyle } from "lightweight-charts";
 
 /* ════════════════════════════════════════════════════════════════
@@ -2710,7 +2710,7 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               {mode === "Pro" && (
                 <div style={{background:"#0d1117",border:"1px solid #1f6feb22",borderRadius:5,padding:"10px 12px",fontFamily:"'JetBrains Mono',monospace"}}>
                   <div style={{fontSize:7,color:"#1f6feb",letterSpacing:2.5,marginBottom:8}}>PRO · RAW DNA DUMP</div>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 16px"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 16px",marginBottom:10}}>
                     {[
                       ["marketBias", dna.marketBias.toFixed(1)],
                       ["trendStrength", dna.trendStrength.toFixed(1)],
@@ -2733,6 +2733,32 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
                       </div>
                     ))}
                   </div>
+                  {processorSnap && (
+                    <>
+                      <div style={{fontSize:7,color:"#b388ff",letterSpacing:2.5,marginBottom:6,marginTop:4,borderTop:"1px solid #161b22",paddingTop:8}}>PROCESSOR SNAPSHOT · LIVE</div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 16px"}}>
+                        {[
+                          ["r1s %", processorSnap.returns?.r1s?.toFixed(4)],
+                          ["r5s %", processorSnap.returns?.r5s?.toFixed(4)],
+                          ["r1m %", processorSnap.returns?.r1m?.toFixed(4)],
+                          ["volIndex", processorSnap.volatilityIndex?.toFixed(4)],
+                          ["volAccel", processorSnap.volumeAcceleration?.toFixed(4)],
+                          ["momShift", processorSnap.momentumShift?.toFixed(4)],
+                          ["obImbal", processorSnap.orderBookImbalance?.toFixed(4)],
+                          ["liqPress", processorSnap.liquidityPressure?.toFixed(4)],
+                          ["ticks", processorSnap.priceCount],
+                          ["regime", regime?.regime?.replace(/_/g," ")?.slice(0,12)],
+                          ["pUp", probScore ? `${probScore.pUp}%` : "—"],
+                          ["netEdge", probScore ? `${probScore.netEdge>0?"+":""}${probScore.netEdge}%` : "—"],
+                        ].map(([k,v],i) => (
+                          <div key={i} style={{display:"flex",justifyContent:"space-between",borderBottom:"1px solid #161b22",padding:"3px 0"}}>
+                            <span style={{fontSize:8,color:"#4a5568"}}>{k}</span>
+                            <span style={{fontSize:8,color:"#b388ff",fontWeight:700}}>{v ?? "—"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
 
