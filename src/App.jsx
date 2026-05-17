@@ -50,48 +50,103 @@ function lsSet(key, val) {
 }
 
 /* ══════════════════════════════════════════════════
-   BINANCE WEBSOCKET ENGINE
-   Connects to live streams for selected market only.
-   Cleans up on market switch.
+   DUAL-SOURCE WEBSOCKET ENGINE
+   Primary: Binance  |  Fallback: Bybit
+   Streams: aggTrade + miniTicker + depth5
 ══════════════════════════════════════════════════ */
-class BinanceWS {
+class DualSourceWS {
   constructor() {
     this.ws = null;
+    this.depthWS = null;
     this.symbol = null;
     this.listeners = new Set();
-    this.lastTick = null;
     this.reconnectTimer = null;
     this.dead = false;
+    this.source = "none";
+    this.orderBook = { bids: [], asks: [] };
+    this.tradeBuffer = [];
   }
 
   connect(symbol, onTick) {
     this.dead = false;
     if (this.symbol === symbol && this.ws?.readyState === 1) {
-      this.listeners.add(onTick);
-      return;
+      this.listeners.add(onTick); return;
     }
     this.destroy();
     this.symbol = symbol;
     this.listeners.add(onTick);
-    const stream = `${symbol.toLowerCase()}@aggTrade/${symbol.toLowerCase()}@miniTicker`;
+    this._connectBinance(symbol);
+  }
+
+  _connectBinance(symbol) {
+    const sym = symbol.toLowerCase();
     try {
-      this.ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${stream}`);
+      this.ws = new WebSocket(`wss://stream.binance.com:9443/stream?streams=${sym}@aggTrade/${sym}@miniTicker`);
+      this.ws.onopen = () => { this.source = "binance"; };
+      this.ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data); const d = msg.data; if (!d) return;
+          if (d.e === "aggTrade") {
+            const trade = { price: parseFloat(d.p), qty: parseFloat(d.q), isBuy: !d.m, time: d.T };
+            this.tradeBuffer = [...this.tradeBuffer.slice(-99), trade];
+            this.listeners.forEach(fn => fn({ type: "trade", ...trade, source: "binance" }));
+          } else if (d.e === "24hrMiniTicker") {
+            this.listeners.forEach(fn => fn({
+              type: "ticker", source: "binance",
+              price: parseFloat(d.c), open: parseFloat(d.o),
+              high: parseFloat(d.h), low: parseFloat(d.l), vol: parseFloat(d.v),
+              change24h: ((parseFloat(d.c) - parseFloat(d.o)) / parseFloat(d.o) * 100),
+            }));
+          }
+        } catch {}
+      };
+      this.ws.onerror = () => this._connectBybit(symbol);
+      this.ws.onclose = () => { if (!this.dead) this._scheduleReconnect(); };
+
+      // Depth stream
+      try {
+        this.depthWS = new WebSocket(`wss://stream.binance.com:9443/ws/${sym}@depth5@500ms`);
+        this.depthWS.onmessage = (e) => {
+          try {
+            const d = JSON.parse(e.data);
+            if (d.bids && d.asks) {
+              const bids = d.bids.map(b => ({ price: parseFloat(b[0]), qty: parseFloat(b[1]) }));
+              const asks = d.asks.map(a => ({ price: parseFloat(a[0]), qty: parseFloat(a[1]) }));
+              this.orderBook = { bids, asks };
+              const bidVol = bids.reduce((a, b) => a + b.qty, 0);
+              const askVol = asks.reduce((a, b) => a + b.qty, 0);
+              const imbalance = bidVol / (bidVol + askVol + 0.0001);
+              this.listeners.forEach(fn => fn({ type: "depth", bids, asks, imbalance, bidVol, askVol }));
+            }
+          } catch {}
+        };
+      } catch {}
+    } catch { this._connectBybit(symbol); }
+  }
+
+  _connectBybit(symbol) {
+    try {
+      this.ws = new WebSocket("wss://stream.bybit.com/v5/public/spot");
+      this.ws.onopen = () => {
+        this.source = "bybit";
+        this.ws.send(JSON.stringify({ op: "subscribe", args: [`publicTrade.${symbol}`, `tickers.${symbol}`] }));
+      };
       this.ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
-          const d = msg.data;
-          if (!d) return;
-          if (d.e === "aggTrade") {
-            const tick = { price: parseFloat(d.p), qty: parseFloat(d.q), isBuy: !d.m, time: d.T };
-            this.lastTick = tick;
-            this.listeners.forEach(fn => fn({ type: "trade", ...tick }));
-          } else if (d.e === "24hrMiniTicker") {
-            const ticker = {
-              price: parseFloat(d.c), open: parseFloat(d.o),
-              high: parseFloat(d.h), low: parseFloat(d.l),
-              vol: parseFloat(d.v), change24h: ((parseFloat(d.c) - parseFloat(d.o)) / parseFloat(d.o) * 100),
-            };
-            this.listeners.forEach(fn => fn({ type: "ticker", ...ticker }));
+          if (msg.topic?.startsWith("publicTrade")) {
+            msg.data?.forEach(t => {
+              const trade = { price: parseFloat(t.p), qty: parseFloat(t.v), isBuy: t.S === "Buy", time: t.T };
+              this.tradeBuffer = [...this.tradeBuffer.slice(-99), trade];
+              this.listeners.forEach(fn => fn({ type: "trade", ...trade, source: "bybit" }));
+            });
+          } else if (msg.topic?.startsWith("tickers")) {
+            const d = msg.data;
+            if (d?.lastPrice) this.listeners.forEach(fn => fn({
+              type: "ticker", source: "bybit",
+              price: parseFloat(d.lastPrice), open: parseFloat(d.prevPrice24h || d.lastPrice),
+              vol: parseFloat(d.volume24h || 0), change24h: parseFloat(d.price24hPcnt || 0) * 100,
+            }));
           }
         } catch {}
       };
@@ -105,8 +160,7 @@ class BinanceWS {
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => {
       if (!this.dead && this.symbol) {
-        const listeners = [...this.listeners];
-        this.listeners.clear();
+        const listeners = [...this.listeners]; this.listeners.clear();
         listeners.forEach(fn => this.connect(this.symbol, fn));
       }
     }, 3000);
@@ -119,11 +173,249 @@ class BinanceWS {
     clearTimeout(this.reconnectTimer);
     this.listeners.clear();
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
-    this.symbol = null;
+    if (this.depthWS) { try { this.depthWS.close(); } catch {} this.depthWS = null; }
+    this.symbol = null; this.source = "none";
+    this.orderBook = { bids: [], asks: [] }; this.tradeBuffer = [];
   }
 }
 
-const binanceWS = new BinanceWS();
+const binanceWS = new DualSourceWS();
+
+/* ══════════════════════════════════════════════════
+   MARKET DATA PROCESSOR
+   Real-time: returns, volatility, momentum,
+   volume acceleration, order book imbalance,
+   liquidity pressure — updates on every tick
+══════════════════════════════════════════════════ */
+class MarketDataProcessor {
+  constructor() {
+    this.priceHistory = [];
+    this.volHistory = [];
+    this.imbalanceHistory = [];
+  }
+
+  ingestTrade(price, qty, time) {
+    this.priceHistory = [...this.priceHistory.slice(-299), { price, time: time || Date.now() }];
+    this.volHistory = [...this.volHistory.slice(-299), qty];
+  }
+
+  ingestDepth(imbalance) {
+    this.imbalanceHistory = [...this.imbalanceHistory.slice(-59), imbalance];
+  }
+
+  get returns() {
+    const h = this.priceHistory;
+    if (h.length < 2) return { r1s: 0, r5s: 0, r1m: 0 };
+    const last = h[h.length - 1].price;
+    return {
+      r1s: ((last - h[h.length - 2].price) / h[h.length - 2].price) * 100,
+      r5s: ((last - h[Math.max(0, h.length - 6)].price) / h[Math.max(0, h.length - 6)].price) * 100,
+      r1m: ((last - h[Math.max(0, h.length - 61)].price) / h[Math.max(0, h.length - 61)].price) * 100,
+    };
+  }
+
+  get volatilityIndex() {
+    if (this.priceHistory.length < 10) return 0;
+    const prices = this.priceHistory.slice(-20).map(p => p.price);
+    const mean = prices.reduce((a, b) => a + b, 0) / prices.length;
+    const variance = prices.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / prices.length;
+    return Math.sqrt(variance) / mean * 100;
+  }
+
+  get volumeAcceleration() {
+    if (this.volHistory.length < 10) return 0;
+    const recent = this.volHistory.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    const older = this.volHistory.slice(-15, -5).reduce((a, b) => a + b, 0) / 10;
+    return older > 0 ? (recent - older) / older : 0;
+  }
+
+  get momentumShift() {
+    const r = this.returns;
+    return r.r1m !== 0 ? (r.r5s / Math.abs(r.r1m)) - 1 : 0;
+  }
+
+  get orderBookImbalance() {
+    if (!this.imbalanceHistory.length) return 0.5;
+    return this.imbalanceHistory.reduce((a, b) => a + b, 0) / this.imbalanceHistory.length;
+  }
+
+  get liquidityPressure() {
+    return Math.max(-1, Math.min(1, (this.orderBookImbalance - 0.5) * 2 + this.volumeAcceleration * 0.5));
+  }
+
+  snapshot() {
+    return {
+      returns: this.returns,
+      volatilityIndex: parseFloat(this.volatilityIndex.toFixed(4)),
+      volumeAcceleration: parseFloat(this.volumeAcceleration.toFixed(4)),
+      momentumShift: parseFloat(this.momentumShift.toFixed(4)),
+      orderBookImbalance: parseFloat(this.orderBookImbalance.toFixed(4)),
+      liquidityPressure: parseFloat(this.liquidityPressure.toFixed(4)),
+      priceCount: this.priceHistory.length,
+    };
+  }
+}
+
+const mdp = new MarketDataProcessor();
+
+/* ══════════════════════════════════════════════════
+   MARKET REGIME ENGINE
+   Classifies market BEFORE any prediction is made.
+   7 regimes — each changes how predictions behave.
+══════════════════════════════════════════════════ */
+function classifyMarketRegime(candles, dnaSnapshot, ps) {
+  if (!dnaSnapshot) return { regime: "INITIALIZING", color: "#4a5568", icon: "◌", confidence: 0, hint: "Loading data…", predBehavior: "none" };
+  ps = ps || {};
+  const vi = ps.volatilityIndex || 0;
+  const va = ps.volumeAcceleration || 0;
+  const imb = ps.orderBookImbalance || 0.5;
+  const lp = ps.liquidityPressure || 0;
+  const r1m = ps.returns?.r1m || 0;
+  const { trendStrength, reversalProb, trapProb, volPct, marketBias, exitRisk } = dnaSnapshot;
+
+  const scores = {
+    TRENDING_BULL:  (marketBias>25?30:0)+(trendStrength>55?25:0)+(imb>0.55?15:0)+(r1m>0.5?20:0)+(va>0.1?10:0),
+    TRENDING_BEAR:  (marketBias<-25?30:0)+(trendStrength>55?25:0)+(imb<0.45?15:0)+(r1m<-0.5?20:0)+(va>0.1?10:0),
+    RANGING:        (Math.abs(marketBias)<20?30:0)+(trendStrength<40?25:0)+(vi<0.15?20:0)+(Math.abs(r1m)<0.3?15:0),
+    BREAKOUT:       (va>0.4?35:0)+(vi>0.3?25:0)+(trendStrength>70?20:0)+(Math.abs(lp)>0.4?20:0),
+    REVERSAL_ZONE:  (reversalProb>60?35:0)+(exitRisk>55?25:0)+(trapProb>50?20:0)+(Math.abs(r1m)>1?20:0),
+    HIGH_VOL_SHOCK: (vi>0.5?40:0)+(va>0.6?30:0)+(volPct>2?20:0)+(Math.abs(r1m)>1.5?10:0),
+    LIQUIDITY_TRAP: (trapProb>65?40:0)+((imb<0.3||imb>0.7)?25:0)+(va>0.3&&Math.abs(r1m)<0.2?20:0)+(vi>0.25?15:0),
+  };
+
+  const [regime, rawConf] = Object.entries(scores).sort((a,b) => b[1]-a[1])[0];
+  const confidence = Math.min(95, rawConf);
+
+  const meta = {
+    TRENDING_BULL:  { color:"#00d4a8", icon:"▲", hint:"Trend intact. Momentum supporting buyers. Bias long.", predBehavior:"bull" },
+    TRENDING_BEAR:  { color:"#ff4757", icon:"▼", hint:"Downtrend active. Sellers in control. Bias short.", predBehavior:"bear" },
+    RANGING:        { color:"#ffd600", icon:"↔", hint:"No clear direction. Fade extremes, avoid breakout chasing.", predBehavior:"range" },
+    BREAKOUT:       { color:"#b388ff", icon:"⚡", hint:"Volatility expanding. Breakout in progress. Confirm direction.", predBehavior:"breakout" },
+    REVERSAL_ZONE:  { color:"#ff6b6b", icon:"↩", hint:"Reversal signals building. Exit or reduce exposure.", predBehavior:"reversal" },
+    HIGH_VOL_SHOCK: { color:"#ff4757", icon:"💥", hint:"Extreme volatility. High slippage risk. Widen stops or stand aside.", predBehavior:"shock" },
+    LIQUIDITY_TRAP: { color:"#ffd600", icon:"🎯", hint:"Liquidity thin. Stop hunts likely. Wait for genuine move.", predBehavior:"trap" },
+  };
+
+  return { regime, confidence, ...meta[regime] };
+}
+
+/* ══════════════════════════════════════════════════
+   PROBABILITY SCORING ENGINE (HEDGE FUND STYLE)
+   Weighted multi-factor P(up) / P(down)
+   Full reasoning chain — no black box outputs
+══════════════════════════════════════════════════ */
+function computeProbabilityScore(dna, ps, regime) {
+  if (!dna || !ps) return null;
+  const { returns, volatilityIndex, volumeAcceleration, orderBookImbalance, liquidityPressure } = ps;
+
+  const momentum    = Math.max(0, Math.min(1, (returns.r1m + 5) / 10));
+  const volumeTrend = Math.max(0, Math.min(1, (volumeAcceleration + 1) / 2));
+  const orderImbal  = orderBookImbalance;
+  const trendAlign  = Math.max(0, Math.min(1, (dna.marketBias + 100) / 200));
+  const volShock    = Math.max(0, Math.min(1, volatilityIndex / 1.0));
+  const liqPress    = Math.max(0, Math.min(1, (liquidityPressure + 1) / 2));
+  const rsiNorm     = Math.max(0, Math.min(1, (dna.lastRSI || 50) / 100));
+  const smNorm      = Math.max(0, Math.min(1, (dna.smBias + 100) / 200));
+
+  let w = { momentum:0.20, volumeTrend:0.15, orderImbal:0.18, trendAlign:0.20, volShock:0.10, liqPress:0.08, rsi:0.05, sm:0.04 };
+  if (regime?.predBehavior === "shock")    { w.volShock=0.25; w.momentum=0.10; }
+  if (regime?.predBehavior === "trap")     { w.orderImbal=0.30; w.liqPress=0.20; }
+  if (regime?.predBehavior === "reversal") { w.momentum=0.10; w.rsi=0.20; w.trendAlign=0.10; }
+  if (regime?.predBehavior === "breakout") { w.volumeTrend=0.28; w.momentum=0.25; }
+
+  const rawUp = w.momentum*momentum + w.volumeTrend*volumeTrend + w.orderImbal*orderImbal +
+    w.trendAlign*trendAlign + w.liqPress*liqPress + w.rsi*rsiNorm + w.sm*smNorm - w.volShock*volShock;
+
+  const pUp   = Math.max(5, Math.min(95, Math.round(rawUp * 100)));
+  const pDown = 100 - pUp;
+  const netEdge = pUp - 50;
+  const confidence = Math.round((1 - volShock*0.5) * (regime?.confidence||50)/100 * (0.5 + Math.abs(netEdge)/100) * 100);
+
+  const supporting = [], contradicting = [], invalidation = [];
+
+  if (momentum > 0.6)          supporting.push(`Momentum strong (${returns.r1m.toFixed(2)}% / 1m)`);
+  else if (momentum < 0.4)     contradicting.push(`Weak momentum (${returns.r1m.toFixed(2)}% / 1m)`);
+  if (volumeAcceleration > 0.2) supporting.push(`Volume accelerating +${(volumeAcceleration*100).toFixed(0)}%`);
+  else if (volumeAcceleration < -0.2) contradicting.push(`Volume decelerating ${(volumeAcceleration*100).toFixed(0)}%`);
+  if (orderImbal > 0.6)        supporting.push(`Bid-side dominant (${(orderImbal*100).toFixed(0)}% bids)`);
+  else if (orderImbal < 0.4)   contradicting.push(`Ask-side dominant (${((1-orderImbal)*100).toFixed(0)}% asks)`);
+  if (trendAlign > 0.65)       supporting.push(`Higher TF trend aligned bullish`);
+  else if (trendAlign < 0.35)  contradicting.push(`Higher TF trend aligned bearish`);
+  if (volShock > 0.5)          contradicting.push(`Volatility elevated — slippage risk`);
+  if (dna.trapProb > 55)       contradicting.push(`TrapSense™ flagged ${dna.trapProb}% trap probability`);
+  if (dna.exitRisk > 60)       contradicting.push(`Exit risk ${dna.exitRisk}% — momentum collapsing`);
+  if (dna.mtfConfluence)       supporting.push(`Multi-timeframe confluence confirmed`);
+  else                         contradicting.push(`Higher TF diverging — reduce conviction`);
+
+  if (pUp > 50) {
+    invalidation.push(`Close below EMA20 with volume spike invalidates bull case`);
+    invalidation.push(`RSI drop below 45 on rising volume = distribution signal`);
+  } else {
+    invalidation.push(`Close above EMA50 with momentum = bear thesis invalidated`);
+    invalidation.push(`Volume surge with price recovery = capitulation complete`);
+  }
+
+  return { pUp, pDown, netEdge, confidence, supporting, contradicting, invalidation,
+    inputs: { momentum, volumeTrend, orderImbal, trendAlign, volShock, liqPress }, regime: regime?.regime || "UNKNOWN" };
+}
+
+/* ══════════════════════════════════════════════════
+   LOSS PREVENTION ENGINE
+   Fires BEFORE losses — ranked by urgency
+   Each alert: reason, beginner text, action
+══════════════════════════════════════════════════ */
+function computeLossPreventionAlerts(dna, ps, recentTrades) {
+  if (!dna || !ps) return [];
+  const alerts = [];
+  const { returns, volatilityIndex, volumeAcceleration, orderBookImbalance } = ps;
+  const buyPressure = recentTrades.length > 0 ? recentTrades.filter(t=>t.isBuy).length/recentTrades.length : 0.5;
+  const avgSize = recentTrades.reduce((a,t)=>a+t.qty,0) / Math.max(recentTrades.length,1);
+  const whaleSells = recentTrades.filter(t=>!t.isBuy && t.qty>avgSize*3).length;
+
+  if (ps.momentumShift < -0.4 && dna.trendStrength > 40)
+    alerts.push({ id:"MOM_WEAK", icon:"📉", impact:"HIGH", urgency:90,
+      reason:`Momentum decelerating rapidly (shift: ${ps.momentumShift.toFixed(2)}). Price still moving but engine stalling.`,
+      beginner:"The market is slowing down fast. The move may be running out of steam.",
+      action:"Tighten stop-loss to 50% of current distance. Do not add to position." });
+
+  if (returns.r1m > 0.3 && volumeAcceleration < -0.3)
+    alerts.push({ id:"VOL_DIV", icon:"⚡", impact:"HIGH", urgency:85,
+      reason:`Price rising ${returns.r1m.toFixed(2)}% but volume falling ${(volumeAcceleration*100).toFixed(0)}%. Classic distribution pattern.`,
+      beginner:"Price is going up but fewer people are participating. This often ends badly.",
+      action:"Reduce position by 30–50%. Set hard stop at previous swing low." });
+
+  if (volatilityIndex > 0.4 && dna.reversalProb > 55)
+    alerts.push({ id:"VOL_SPIKE", icon:"💥", impact:"HIGH", urgency:80,
+      reason:`Volatility index ${(volatilityIndex*100).toFixed(1)}% with reversal probability ${dna.reversalProb}%. Stop-losses at high risk.`,
+      beginner:"The market is moving wildly. Your stop-loss could get triggered by noise.",
+      action:"Widen stop by 1 ATR or reduce size to limit dollar risk." });
+
+  if (Math.abs(orderBookImbalance - 0.5) > 0.3 && volumeAcceleration < 0)
+    alerts.push({ id:"LIQ_THIN", icon:"🎯", impact:"MEDIUM", urgency:65,
+      reason:`Order book heavily skewed (${(orderBookImbalance*100).toFixed(0)}% bid-side) with declining volume.`,
+      beginner:"There are very few buyers/sellers right now. A small move could cause a big price spike.",
+      action:"Avoid market orders. Use limit orders only." });
+
+  if (whaleSells >= 2 && dna.signal !== "SELL")
+    alerts.push({ id:"WHALE_DIST", icon:"🐋", impact:"HIGH", urgency:88,
+      reason:`${whaleSells} large sell orders detected while retail sentiment bullish. Smart money distributing.`,
+      beginner:"Big traders are selling while small traders are buying. This is a warning sign.",
+      action:"Exit 50% of position. Smart money exits are a leading indicator of reversals." });
+
+  if (dna.trapProb > 70)
+    alerts.push({ id:"TRAP_IMM", icon:"🎭", impact:"HIGH", urgency:92,
+      reason:`TrapSense AI™ confidence ${dna.trapProb}%. False breakout or stop hunt likely within 1–3 candles.`,
+      beginner:"The market looks like it's setting a trap. Many traders about to get fooled.",
+      action:"Do not enter new trades. If in trade, move stop to breakeven immediately." });
+
+  if (dna.lastRSI > 70 && returns.r5s < 0)
+    alerts.push({ id:"RSI_DIV", icon:"↩️", impact:"MEDIUM", urgency:70,
+      reason:`RSI overbought at ${dna.lastRSI?.toFixed(0)} while price fading (${returns.r5s.toFixed(3)}% last 5s). Bearish divergence.`,
+      beginner:"The market is very overbought and starting to turn. Price may drop soon.",
+      action:"Tighten stop to 1R. Consider partial exit on next green candle close." });
+
+  return alerts.sort((a,b)=>b.urgency-a.urgency).slice(0,5);
+}
 
 /* ══════════════════════════════════════════════════
    LIVE COMMENTARY ENGINE
@@ -1206,6 +1498,14 @@ function PulseTradeAIInner() {
   const [signalFlash, setSignalFlash] = useState(false);
   const [analyzing,  setAnalyzing]   = useState(true);
 
+  // Intelligence layer state
+  const [regime,        setRegime]        = useState(null);
+  const [probScore,     setProbScore]     = useState(null);
+  const [lossAlerts,    setLossAlerts]    = useState([]);
+  const [processorSnap, setProcessorSnap] = useState(null);
+  const [wsSource,      setWsSource]      = useState("none");
+  const [depthData,     setDepthData]     = useState({ bids:[], asks:[], imbalance:0.5 });
+
   // WebSocket state
   const [wsConnected,  setWsConnected]  = useState(false);
   const [recentTrades, setRecentTrades] = useState([]);
@@ -1243,6 +1543,12 @@ function PulseTradeAIInner() {
     setDna(marketDNA);
     const pred = generatePrediction(c, marketDNA);
     setPrediction(pred);
+    const initSnap = mdp.snapshot();
+    const initRegime = classifyMarketRegime(c, marketDNA, initSnap);
+    const initProb = computeProbabilityScore(marketDNA, initSnap, initRegime);
+    setRegime(initRegime);
+    setProbScore(initProb);
+    setLossAlerts([]);
 
     /* PATCH 2: Store in cache */
     dnaCache.current[market.id] = { dna: marketDNA, prediction: pred };
@@ -1262,30 +1568,41 @@ function PulseTradeAIInner() {
   const candlesRef = useRef(candles);
   useEffect(() => { candlesRef.current = candles; }, [candles]);
 
-  /* ── WebSocket connection for crypto markets ── */
+  /* ── WebSocket connection — dual source + processor feed ── */
   useEffect(() => {
     const binanceMap = { "BTC/USD": "BTCUSDT", "ETH/USD": "ETHUSDT" };
     const symbol = binanceMap[market.id];
-    if (!symbol) { setWsConnected(false); return; }
+    if (!symbol) { setWsConnected(false); setWsSource("none"); return; }
 
     setWsConnected(false);
     recentTradesRef.current = [];
     setRecentTrades([]);
+    mdp.priceHistory = [];
+    mdp.volHistory = [];
+    mdp.imbalanceHistory = [];
 
     const onTick = (msg) => {
       if (msg.type === "trade") {
         setWsConnected(true);
-        // Keep last 60 trades for analysis
-        recentTradesRef.current = [...recentTradesRef.current.slice(-59), msg];
-        setRecentTrades(prev => [...prev.slice(-59), msg]);
-        // Update price from trade stream
+        setWsSource(msg.source || "binance");
+        mdp.ingestTrade(msg.price, msg.qty, msg.time);
+        recentTradesRef.current = [...recentTradesRef.current.slice(-99), msg];
+        setRecentTrades(prev => [...prev.slice(-99), msg]);
         onPriceUpdateRef.current?.(msg.price);
+        const now = Date.now();
+        if (!onTick._lastSnap || now - onTick._lastSnap > 500) {
+          onTick._lastSnap = now;
+          setProcessorSnap(mdp.snapshot());
+        }
       } else if (msg.type === "ticker") {
         setWsConnected(true);
         if (msg.price) {
           onPriceUpdateRef.current?.(msg.price);
-          setPriceChange(parseFloat(msg.change24h.toFixed(2)));
+          if (msg.change24h !== undefined) setPriceChange(parseFloat(msg.change24h.toFixed(2)));
         }
+      } else if (msg.type === "depth") {
+        mdp.ingestDepth(msg.imbalance);
+        setDepthData({ bids: msg.bids, asks: msg.asks, imbalance: msg.imbalance });
       }
     };
 
@@ -1349,6 +1666,14 @@ function PulseTradeAIInner() {
       }
       prevSignalRef.current = freshDNA.signal;
 
+      const snap = mdp.snapshot();
+      const freshRegime = classifyMarketRegime(latestCandles, freshDNA, snap);
+      const freshProb = computeProbabilityScore(freshDNA, snap, freshRegime);
+      const freshAlerts = computeLossPreventionAlerts(freshDNA, snap, recentTradesRef.current);
+      setRegime(freshRegime);
+      setProbScore(freshProb);
+      setLossAlerts(freshAlerts);
+      setProcessorSnap(snap);
       setDna(freshDNA);
       setPrediction(freshPred);
       dnaCache.current[market.id] = { dna: freshDNA, prediction: freshPred };
@@ -1583,7 +1908,7 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               <div style={{width:8,height:8,borderRadius:"50%",background:wsConnected?C.green:C.amber,position:"absolute"}}/>
               <div className="blink" style={{width:8,height:8,borderRadius:"50%",background:wsConnected?C.green:C.amber,position:"absolute",opacity:0.5,transform:"scale(1.8)"}}/>
             </div>
-            <span style={{fontSize:8,color:wsConnected?C.green:C.amber,letterSpacing:2,fontWeight:700}}>{wsConnected?"WS":"POLL"}</span>
+            <span style={{fontSize:8,color:wsConnected?C.green:C.amber,letterSpacing:2,fontWeight:700}}>{wsConnected?wsSource.toUpperCase():"POLL"}</span>
           </div>
         </div>
       </div>
@@ -1821,6 +2146,101 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
                 </div>
               ) : (
                 <>
+                  {/* ── MARKET REGIME BANNER ── */}
+                  {regime && (
+                    <div style={{background:`${regime.color}0d`,border:`2px solid ${regime.color}55`,borderRadius:8,padding:"12px 16px",display:"flex",alignItems:"center",gap:14,position:"relative",overflow:"hidden"}}>
+                      <div style={{position:"absolute",inset:0,backgroundImage:`repeating-linear-gradient(45deg,transparent,transparent 8px,${regime.color}05 8px,${regime.color}05 9px)`,pointerEvents:"none"}}/>
+                      <div style={{width:44,height:44,borderRadius:8,background:`${regime.color}15`,border:`1px solid ${regime.color}44`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,flexShrink:0,position:"relative"}}>{regime.icon}</div>
+                      <div style={{flex:1,position:"relative"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
+                          <span style={{fontSize:11,fontWeight:900,color:regime.color,letterSpacing:1.5}}>{regime.regime.replace(/_/g," ")}</span>
+                          <span style={{fontSize:7,padding:"1px 6px",borderRadius:2,background:regime.color+"20",color:regime.color,fontWeight:700}}>{regime.confidence}% CONF</span>
+                        </div>
+                        <div style={{fontSize:9,color:"#8b949e",lineHeight:1.6}}>
+                          {mode==="Beginner" ? regime.hint : `Regime: ${regime.regime} · Behavior: ${regime.predBehavior} · Confidence: ${regime.confidence}%`}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── PROBABILITY INTELLIGENCE REPORT ── */}
+                  {probScore && (
+                    <div style={{background:"#0d1117",border:"1px solid #1f6feb33",borderRadius:8,padding:"14px 16px"}}>
+                      <div style={{fontSize:7,color:"#1f6feb",letterSpacing:2.5,marginBottom:12,display:"flex",alignItems:"center",gap:5}}>
+                        <span className="blink">●</span> MARKET INTELLIGENCE REPORT · {market.id}
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
+                        {[
+                          {l:"TREND BIAS",   v:probScore.pUp>55?"BULLISH":probScore.pUp<45?"BEARISH":"NEUTRAL", c:probScore.pUp>55?"#00d4a8":probScore.pUp<45?"#ff4757":"#ffd600"},
+                          {l:"P(UP)",        v:`${probScore.pUp}%`,    c:"#00d4a8"},
+                          {l:"P(DOWN)",      v:`${probScore.pDown}%`,  c:"#ff4757"},
+                          {l:"NET EDGE",     v:`${probScore.netEdge>0?"+":""}${probScore.netEdge}%`, c:probScore.netEdge>5?"#00d4a8":probScore.netEdge<-5?"#ff4757":"#ffd600"},
+                          {l:"CONFIDENCE",   v:`${probScore.confidence}%`, c:"#1f6feb"},
+                          {l:"REGIME",       v:regime?.regime?.replace(/_/g," ")||"—", c:regime?.color||"#8b949e"},
+                        ].map((x,i)=>(
+                          <div key={i} style={{background:"#161b22",borderRadius:4,padding:"8px 10px",border:"1px solid #21262d",textAlign:"center"}}>
+                            <div style={{fontSize:6,color:"#4a5568",letterSpacing:1.5,marginBottom:3}}>{x.l}</div>
+                            <div style={{fontSize:11,color:x.c,fontWeight:700}}>{x.v}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {mode !== "Beginner" && probScore.supporting.length > 0 && (
+                        <div style={{marginBottom:8}}>
+                          <div style={{fontSize:7,color:"#00d4a8",letterSpacing:1.5,marginBottom:5}}>SUPPORTING SIGNALS</div>
+                          {probScore.supporting.map((s,i)=>(
+                            <div key={i} style={{fontSize:8,color:"#8b949e",padding:"2px 0",display:"flex",gap:6,alignItems:"center"}}>
+                              <span style={{color:"#00d4a8",flexShrink:0}}>✓</span>{s}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {mode !== "Beginner" && probScore.contradicting.length > 0 && (
+                        <div style={{marginBottom:8}}>
+                          <div style={{fontSize:7,color:"#ff4757",letterSpacing:1.5,marginBottom:5}}>CONTRADICTING SIGNALS</div>
+                          {probScore.contradicting.map((s,i)=>(
+                            <div key={i} style={{fontSize:8,color:"#8b949e",padding:"2px 0",display:"flex",gap:6,alignItems:"center"}}>
+                              <span style={{color:"#ff4757",flexShrink:0}}>✗</span>{s}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {mode !== "Beginner" && probScore.invalidation.length > 0 && (
+                        <div style={{background:"rgba(255,214,0,0.05)",border:"1px solid #ffd60022",borderRadius:4,padding:"8px 10px"}}>
+                          <div style={{fontSize:7,color:"#ffd600",letterSpacing:1.5,marginBottom:5}}>INVALIDATION CONDITIONS</div>
+                          {probScore.invalidation.map((s,i)=>(
+                            <div key={i} style={{fontSize:8,color:"#8b949e",padding:"2px 0",display:"flex",gap:6}}>
+                              <span style={{color:"#ffd600",flexShrink:0}}>⚠</span>{s}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── LOSS PREVENTION ENGINE ALERTS ── */}
+                  {lossAlerts.length > 0 && (
+                    <div style={{background:"rgba(255,71,87,0.07)",border:"2px solid #ff475755",borderRadius:8,padding:"12px 14px",position:"relative",overflow:"hidden"}}>
+                      <div style={{position:"absolute",top:0,left:0,right:0,height:2,background:"linear-gradient(90deg,transparent,#ff4757,transparent)",animation:"shimmer 1.5s infinite",backgroundSize:"200% 100%"}}/>
+                      <div style={{fontSize:7,color:"#ff4757",letterSpacing:2.5,marginBottom:10,display:"flex",alignItems:"center",gap:5}}>
+                        <span className="blink">🚨</span>
+                        {mode==="Beginner" ? "RISK WARNINGS — READ BEFORE TRADING" : `LOSS PREVENTION ENGINE™ · ${lossAlerts.length} ALERT${lossAlerts.length>1?"S":""} ACTIVE`}
+                      </div>
+                      {lossAlerts.map((a,i)=>(
+                        <div key={i} style={{background:"rgba(0,0,0,0.3)",borderRadius:5,padding:"10px 12px",marginBottom:i<lossAlerts.length-1?8:0,borderLeft:`3px solid ${a.impact==="HIGH"?"#ff4757":a.impact==="MEDIUM"?"#ffd600":"#8b949e"}`}}>
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+                            <div style={{display:"flex",alignItems:"center",gap:6}}>
+                              <span style={{fontSize:11}}>{a.icon}</span>
+                              <span style={{fontSize:9,fontWeight:700,color:a.impact==="HIGH"?"#ff4757":a.impact==="MEDIUM"?"#ffd600":"#8b949e",letterSpacing:.5}}>{a.id.replace(/_/g," ")}</span>
+                            </div>
+                            <span style={{fontSize:7,padding:"1px 5px",borderRadius:2,background:a.impact==="HIGH"?"#ff475730":"#ffd60020",color:a.impact==="HIGH"?"#ff4757":"#ffd600",fontWeight:700}}>{a.impact}</span>
+                          </div>
+                          <div style={{fontSize:8,color:"#c9d1d9",lineHeight:1.6,marginBottom:4}}>{mode==="Beginner" ? a.beginner : a.reason}</div>
+                          <div style={{fontSize:8,color:"#ffd600",fontWeight:600}}>→ {a.action}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
                   {/* ── PRE-LOSS WARNING BANNER (shows when score >= 20) ── */}
                   {preLoss.score >= 20 && (
                     <div style={{
