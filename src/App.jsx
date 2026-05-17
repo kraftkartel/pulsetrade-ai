@@ -69,7 +69,7 @@ const getBeginnerSignalText = (signal) => {
   };
   return {
     action: "⏸ Wait for a Better Setup",
-    sub: "Conditions are mixed right now. Patience protects your money — waiting IS a valid trade decision."
+    sub: "No clear edge right now. Watch for RSI to reach 30 or 70, or wait for a BOS/CHoCH level break with volume. Waiting IS a valid trade decision."
   };
 };
 
@@ -241,6 +241,16 @@ function detectLiquidityZones(candles) {
     { price: lows.slice(0,5).reduce((a,b)=>a+b,0)/5,  label:"Demand Zone", color:"#00d4a833", type:"support" },
   ];
 }
+function getCorrelationWarning(marketId, signal) {
+  const correlations = {
+    "BTC/USD": [{ peer:"ETH/USD", r:0.91, note:"ETH typically follows BTC — monitor ETH for confirmation." }],
+    "ETH/USD": [{ peer:"BTC/USD", r:0.91, note:"BTC leads ETH — check BTC trend before entering ETH." }],
+    "OIL/USD": [{ peer:"GOLD", r:0.42, note:"Oil and Gold weakly correlated. Macro risk-off may affect both." }],
+    "GOLD":    [{ peer:"EUR/USD", r:0.55, note:"USD strength inversely affects Gold — watch DXY." }],
+    "EUR/USD": [{ peer:"GOLD", r:0.55, note:"Weak USD = bullish Gold. Confirm direction via DXY." }],
+  };
+  return correlations[marketId] || [];
+}
 
 function buildRegressionChannel(candles) {
   const n = Math.min(50, candles.length);
@@ -332,8 +342,16 @@ function computeMarketDNA(candles, news, bosSignals) {
   const bullishFactor = (marketBias + 100) / 2;
   const pulseScore    = Math.round(bullishFactor * (1 - trapProb/200) * (1 - exitRisk/250) * (trendStrength/100 * 0.4 + 0.6));
 
+  // Multi-timeframe confluence (simulated HTF agreement)
+  const htfBullish = emaTrend > 0 && trendStrength > 45;
+  const mtfConfluence = htfBullish === (marketBias > 0);
+  const confluenceBonus = mtfConfluence ? 8 : -8;
+  const adjustedPulse = Math.max(0, Math.min(100, pulseScore + confluenceBonus));
+const mtfNote = mtfConfluence
+    ? "Higher timeframe aligns with current signal — confluence confirmed."
+    : "Higher timeframe diverges — reduce position size, wait for alignment.";
   let signal, signalColor, signalBg;
-  if (pulseScore >= 62 && marketBias > 15) {
+  if (adjustedPulse >= 62 && marketBias > 15) {
     signal = "BUY"; signalColor = "#00d4a8"; signalBg = "rgba(0,212,168,0.08)";
   } else if (pulseScore <= 38 || marketBias < -15) {
     signal = "SELL"; signalColor = "#ff4757"; signalBg = "rgba(255,71,87,0.08)";
@@ -420,6 +438,8 @@ function computeMarketDNA(candles, news, bosSignals) {
     target: signal === "BUY" ? `+${(1.8 + Math.random()*2).toFixed(1)}%` : signal === "SELL" ? `-${(1.5 + Math.random()*2).toFixed(1)}%` : "±0.8%",
     stop: signal === "BUY" ? `-${(0.7 + Math.random()*0.8).toFixed(1)}%` : signal === "SELL" ? `+${(0.6 + Math.random()*0.8).toFixed(1)}%` : "±0.5%",
     rr: signal !== "WAIT" ? `${(1.8 + Math.random()*1.5).toFixed(1)}:1` : "—",
+    mtfNote,
+    mtfConfluence,
   };
 }
 
@@ -443,8 +463,82 @@ function generatePrediction(candles, dna) {
   const bullProb = isBull ? Math.min(82, 44 + dna.pulseScore*0.4) : Math.max(18, 44 - dna.pulseScore*0.3);
   return { paths, bullProb: Math.round(bullProb), bearProb: Math.round(100-bullProb), volatility: dna.volPct };
 }
+function PositionSizer({ market, livePrice, dna }) {
+  const [account, setAccount] = useState(10000);
+  const [riskPct, setRiskPct] = useState(1);
+  const C = { bg:"#0d1117", panel:"#161b22", border:"#21262d", green:"#00d4a8", red:"#ff4757", amber:"#ffd600", text:"#c9d1d9", muted:"#8b949e", accent:"#1f6feb" };
+  const stopPct = parseFloat((dna.stop||"-1%").replace(/[+\-%]/g,"")) / 100;
+  const riskAmount = account * (riskPct / 100);
+  const stopDistance = livePrice * stopPct;
+  const units = stopDistance > 0 ? (riskAmount / stopDistance).toFixed(4) : 0;
+  const posValue = (units * livePrice).toFixed(2);
+  const leverage = (posValue / account).toFixed(2);
+  const qualityColor = dna.pulseScore >= 65 ? C.green : dna.pulseScore >= 48 ? C.amber : C.red;
+  const qualityLabel = dna.pulseScore >= 65 ? "HIGH QUALITY" : dna.pulseScore >= 48 ? "MODERATE" : "LOW QUALITY";
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:12,fontFamily:"'JetBrains Mono',monospace"}}>
+      <div style={{background:C.panel,border:`1px solid ${C.border}`,borderRadius:6,padding:"14px"}}>
+        <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5,marginBottom:12}}>POSITION SIZING CALCULATOR™</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
+          <div>
+            <div style={{fontSize:8,color:"#4a5568",marginBottom:4,letterSpacing:1}}>ACCOUNT SIZE ($)</div>
+            <input type="number" value={account} onChange={e=>setAccount(+e.target.value)} style={{width:"100%",background:"#0d1117",border:`1px solid ${C.border}`,borderRadius:4,padding:"6px 8px",color:C.text,fontSize:12,fontFamily:"inherit"}}/>
+          </div>
+          <div>
+            <div style={{fontSize:8,color:"#4a5568",marginBottom:4,letterSpacing:1}}>RISK PER TRADE (%)</div>
+            <input type="number" value={riskPct} step="0.1" min="0.1" max="10" onChange={e=>setRiskPct(+e.target.value)} style={{width:"100%",background:"#0d1117",border:`1px solid ${C.border}`,borderRadius:4,padding:"6px 8px",color:C.text,fontSize:12,fontFamily:"inherit"}}/>
+          </div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
+          {[
+            {l:"RISK AMOUNT",v:`$${riskAmount.toFixed(2)}`,c:C.red},
+            {l:"UNITS / LOTS",v:units,c:C.green},
+            {l:"POSITION VALUE",v:`$${Number(posValue).toLocaleString()}`,c:C.accent},
+            {l:"LEVERAGE",v:`${leverage}x`,c:+leverage>3?C.red:C.amber},
+            {l:"SIGNAL QUALITY",v:qualityLabel,c:qualityColor},
+            {l:"CURRENT PRICE",v:fmt(livePrice,market),c:C.text},
+          ].map((x,i)=>(
+            <div key={i} style={{background:"#0d1117",borderRadius:4,padding:"8px 10px",border:`1px solid ${C.border}`}}>
+              <div style={{fontSize:6,color:"#4a5568",letterSpacing:1.5,marginBottom:3}}>{x.l}</div>
+              <div style={{fontSize:11,color:x.c,fontWeight:700,wordBreak:"break-all"}}>{x.v}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{background:`rgba(255,214,0,0.04)`,border:`1px solid #ffd60033`,borderRadius:5,padding:"10px 12px",fontSize:8,color:"#4a5568",lineHeight:1.8}}>
+        ⚠ <b style={{color:C.amber}}>Risk Disclaimer:</b> This tool provides educational position sizing estimates only. Past performance is not indicative of future results. Never risk more than you can afford to lose. Always consult a licensed financial advisor.
+      </div>
+    </div>
+  );
+}const soundEnabledRef = { current: false };
+function SoundToggle() {
+  const [on, setOn] = useState(false);
+  const toggle = () => { const n = !on; setOn(n); soundEnabledRef.current = n; };
+  return (
+    <button onClick={toggle} title="Signal sound alert" style={{width:28,height:28,display:"flex",alignItems:"center",justifyContent:"center",background:"transparent",border:"1px solid #21262d",borderRadius:3,cursor:"pointer",fontSize:12,color:on?"#00d4a8":"#4a5568",transition:"all .15s"}}>
+      {on ? "🔔" : "🔕"}
+    </button>
+  );
+}
 
 /* ─── SPARK MINI CHART ─── */
+function SessionClock() {
+  const [time, setTime] = useState(new Date());
+  useEffect(() => { const t = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(t); }, []);
+  const h = time.getUTCHours();
+  const session = h >= 8 && h < 16 ? { name:"London", color:"#1f6feb" }
+    : h >= 13 && h < 22 ? { name:"New York", color:"#00d4a8" }
+    : h >= 0 && h < 8 ? { name:"Tokyo", color:"#b388ff" }
+    : { name:"Off-Hours", color:"#4a5568" };
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:6,background:"#161b22",border:"1px solid #21262d",borderRadius:4,padding:"3px 10px"}}>
+      <div style={{width:5,height:5,borderRadius:"50%",background:session.color,boxShadow:`0 0 6px ${session.color}`}}/>
+      <span style={{fontSize:8,color:session.color,letterSpacing:1,fontWeight:700}}>{session.name}</span>
+      <span style={{fontSize:9,color:"#4a5568",fontFamily:"'JetBrains Mono',monospace"}}>{time.toUTCString().slice(17,25)} UTC</span>
+    </div>
+  );
+}
 function Spark({ data, up }) {
   const min = Math.min(...data), max = Math.max(...data), range = max-min||1;
   const w=70, h=26;
@@ -881,6 +975,18 @@ export default function PulseTradeAI() {
       /* PATCH 13: Detect signal changes and alert user */
       if (prevSignalRef.current && prevSignalRef.current !== freshDNA.signal) {
         setSignalChanged({ from: prevSignalRef.current, to: freshDNA.signal, market: market.id });
+        if (soundEnabledRef.current) {
+          try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain); gain.connect(ctx.destination);
+            osc.frequency.value = freshDNA.signal === "BUY" ? 880 : freshDNA.signal === "SELL" ? 440 : 660;
+            gain.gain.setValueAtTime(0.15, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+            osc.start(); osc.stop(ctx.currentTime + 0.4);
+          } catch {}
+        }
         setTimeout(() => setSignalChanged(null), 4000);
       }
       prevSignalRef.current = freshDNA.signal;
@@ -973,6 +1079,7 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
         @keyframes signalPulse{0%,100%{box-shadow:0 0 0 0 currentColor}50%{box-shadow:0 0 0 8px transparent}}
         @keyframes glow{0%,100%{opacity:0.6}50%{opacity:1}}
         @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+        @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
         @keyframes barGrow{from{width:0}to{width:var(--w)}}
         @keyframes priceFlash{0%{opacity:1}30%{opacity:0.3}100%{opacity:1}}
         @keyframes slideDown{from{opacity:0;transform:translateX(-50%) translateY(-10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
@@ -997,7 +1104,9 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
         .analyze-btn:disabled{opacity:.35;cursor:not-allowed;}
         .warn-card{border-radius:4px;padding:8px 10px;border-left:3px solid;margin-bottom:6px;}
         .metric-bar{height:4px;border-radius:2px;background:#21262d;overflow:hidden;}
-        .metric-bar-fill{height:100%;border-radius:2px;transition:width 1.2s cubic-bezier(.4,0,.2,1);}
+        .metric-bar-fill{height:100%;border-radius:2px;transition:width 1.4s cubic-bezier(.22,1,.36,1);}
+        @keyframes countUp{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+        .count-up{animation:countUp .5s ease both;}
         .spinner{width:16px;height:16px;border:2px solid #21262d;border-top-color:#1f6feb;border-radius:50%;animation:spin .8s linear infinite;display:inline-block;}
         .market-signal-flash{animation:signalPulse .5s ease 3;}
         .news-row{display:flex;gap:8px;padding:9px 0;border-bottom:1px solid #161b22;cursor:pointer;transition:opacity .15s;}
@@ -1012,10 +1121,16 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
 
         {/* Logo */}
         <div style={{display:"flex",alignItems:"center",gap:7,marginRight:6}}>
-          <div style={{width:28,height:28,background:"linear-gradient(135deg,#1f6feb,#00d4a8)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,boxShadow:"0 0 14px rgba(31,111,235,0.45)",flexShrink:0}}>⚡</div>
+          <div style={{width:32,height:32,background:"#0d1117",border:"1px solid #1f6feb44",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0,position:"relative"}}>
+            ⚡
+            <div style={{position:"absolute",inset:0,borderRadius:7,background:"radial-gradient(circle at 60% 40%,#1f6feb18,transparent 70%)"}}/>
+          </div>
           <div>
-            <div style={{fontWeight:700,fontSize:12,color:"#e6edf3",letterSpacing:.5,lineHeight:1}}>PulseTrade <span style={{color:C.accent}}>AI™</span></div>
-            <div style={{fontSize:7,color:"#4a5568",letterSpacing:2.5}}>MARKET DNA™ ENGINE</div>
+            <div style={{fontWeight:700,fontSize:13,color:"#e6edf3",letterSpacing:.3,lineHeight:1,display:"flex",alignItems:"center",gap:5}}>
+              PulseTrade <span style={{color:C.accent}}>AI</span>
+              <span style={{fontSize:6,background:"#1f6feb22",border:"1px solid #1f6feb44",borderRadius:2,padding:"1px 4px",color:C.accent,letterSpacing:1,fontWeight:600}}>v3.1</span>
+            </div>
+            <div style={{fontSize:7,color:"#30363d",letterSpacing:2,marginTop:1}}>MARKET DNA™ · BY TWUMVE</div>
           </div>
         </div>
 
@@ -1051,8 +1166,9 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
           ))}
         </div>
 
-        {/* Right side: Mode toggle + PulseScore */}
+        {/* Right side: Session + Mode toggle + PulseScore */}
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10}}>
+          <SessionClock />
 
           {/* PATCH 5: Mode toggle */}
           <div style={{display:"flex",gap:1,background:"#0d1117",borderRadius:4,padding:2,border:`1px solid ${C.border}`}}>
@@ -1070,6 +1186,7 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
               <div style={{fontSize:16,fontWeight:700,color:dna.pulseScore>=62?C.green:dna.pulseScore<=38?C.red:C.amber,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{dna.pulseScore}<span style={{fontSize:9,color:"#4a5568"}}>/100</span></div>
             </div>
           )}
+          <SoundToggle />
           <div style={{display:"flex",alignItems:"center",gap:5}}>
             <div className="blink" style={{width:6,height:6,borderRadius:"50%",background:C.green}}/>
             <span style={{fontSize:8,color:C.green,letterSpacing:2}}>LIVE</span>
@@ -1095,7 +1212,10 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
 
         {/* ═══ LEFT PANEL — WATCHLIST ═══ */}
         <div style={{width:178,background:C.bg,borderRight:`1px solid ${C.border}`,display:"flex",flexDirection:"column",flexShrink:0,overflow:"hidden"}}>
-          <div style={{padding:"5px 10px 4px",fontSize:7,color:"#4a5568",letterSpacing:3,borderBottom:`1px solid ${C.border}`,textTransform:"uppercase",fontWeight:700}}>Markets</div>
+          <div style={{padding:"6px 10px 5px",fontSize:7,color:"#4a5568",letterSpacing:3,borderBottom:`1px solid ${C.border}`,textTransform:"uppercase",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <span>Markets</span>
+            <span style={{fontSize:6,color:"#21262d",letterSpacing:1}}>6 PAIRS</span>
+          </div>
           <div style={{flex:1,overflowY:"auto"}}>
             {MARKETS.map((m,mi) => {
               const p = marketPrices[m.id]||m.base;
@@ -1103,10 +1223,13 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
               const isUp = chg>=0;
               return (
                 <div key={m.id} className={`mkt-row ${market.id===m.id?"active":""}`} onClick={()=>setMarket(m)}>
-                  <div style={{width:20,height:20,background:market.id===m.id?"#1f6feb18":"#21262d",borderRadius:4,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:market.id===m.id?C.accent:C.muted,flexShrink:0,border:market.id===m.id?"1px solid #1f6feb33":"1px solid transparent"}}>{m.icon}</div>
+                  <div style={{width:20,height:20,background:market.id===m.id?"#1f6feb14":"#161b22",borderRadius:4,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:market.id===m.id?C.accent:C.muted,flexShrink:0,border:`1px solid ${market.id===m.id?"#1f6feb33":"#21262d"}`}}>{m.icon}</div>
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontSize:10,color:"#e6edf3",fontWeight:600}}>{m.id}</div>
-                    <div style={{fontSize:7,color:"#4a5568",letterSpacing:.5}}>{m.category}</div>
+                    <div style={{fontSize:10,color:market.id===m.id?"#e6edf3":"#8b949e",fontWeight:market.id===m.id?700:500}}>{m.id}</div>
+                    <div style={{fontSize:7,letterSpacing:.5,display:"flex",alignItems:"center",gap:3}}>
+                      <div style={{width:4,height:4,borderRadius:"50%",background:m.category==="Crypto"?C.purple:m.category==="Forex"?C.accent:C.amber,flexShrink:0}}/>
+                      <span style={{color:"#30363d"}}>{m.category}</span>
+                    </div>
                   </div>
                   <div style={{textAlign:"right",flexShrink:0}}>
                     <div style={{fontSize:9,color:isUp?C.green:C.red}}>{fmt(p,m)}</div>
@@ -1120,9 +1243,14 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
           {/* AI Signal panel */}
           <div style={{padding:"10px 10px 8px",borderTop:`1px solid ${C.border}`,flexShrink:0,display:"flex",flexDirection:"column",gap:7}}>
             {analyzing ? (
-              <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8,padding:"14px 0"}}>
-                <div className="spinner"/>
-                <span style={{fontSize:9,color:"#4a5568",letterSpacing:1}}>ANALYZING {market.id}…</span>
+              <div style={{padding:"10px 0",display:"flex",flexDirection:"column",gap:6}}>
+                {[100,70,85,60].map((w,i)=>(
+                  <div key={i} style={{height:8,borderRadius:4,background:"linear-gradient(90deg,#161b22 25%,#21262d 50%,#161b22 75%)",backgroundSize:"200% 100%",animation:"shimmer 1.4s infinite",opacity:.6,width:`${w}%`}}/>
+                ))}
+                <div style={{fontSize:8,color:"#30363d",letterSpacing:1.5,textAlign:"center",marginTop:6,display:"flex",alignItems:"center",justifyContent:"center",gap:5}}>
+                  <div className="spinner" style={{width:10,height:10,borderWidth:1.5}}/>
+                  <span>ANALYZING {market.id}</span>
+                </div>
               </div>
             ) : dna ? (
               <>
@@ -1137,15 +1265,20 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                   );
                 })() : (
                   <button className="signal-btn market-signal-flash" style={{
-                    background: dna.signalBg,
+                    background: `linear-gradient(160deg,${dna.signalBg},#0d1117 80%)`,
                     borderColor: dna.signalColor,
                     color: dna.signalColor,
-                    boxShadow: `0 0 20px ${dna.signalColor}33, inset 0 1px 0 ${dna.signalColor}22`,
+                    boxShadow: `0 0 24px ${dna.signalColor}44, inset 0 1px 0 ${dna.signalColor}33`,
+                    position:"relative",overflow:"hidden",
                   }}>
-                    {dna.signal === "BUY"  ? "▲ BUY"  :
-                     dna.signal === "SELL" ? "▼ SELL" : "⏸ WAIT"}
-                    <div style={{fontSize:8,fontWeight:400,letterSpacing:1,opacity:.7,marginTop:2}}>
-                      {dna.signal==="BUY"?"Entry opportunity detected":dna.signal==="SELL"?"Exit / short opportunity":"No clear edge — stand by"}
+                    <div style={{position:"absolute",inset:0,backgroundImage:`repeating-linear-gradient(0deg,transparent,transparent 3px,${dna.signalColor}04 3px,${dna.signalColor}04 4px)`,pointerEvents:"none"}}/>
+                    <div style={{position:"relative",zIndex:1}}>
+                      <div style={{fontSize:15,letterSpacing:3,fontWeight:900}}>
+                        {dna.signal === "BUY" ? "▲ BUY" : dna.signal === "SELL" ? "▼ SELL" : "⏸ WAIT"}
+                      </div>
+                      <div style={{fontSize:8,fontWeight:400,letterSpacing:1,opacity:.6,marginTop:3,borderTop:`1px solid ${dna.signalColor}22`,paddingTop:3}}>
+                        {dna.signal==="BUY"?"Entry opportunity detected":dna.signal==="SELL"?"Exit / short opportunity":"No clear edge — stand by"}
+                      </div>
                     </div>
                   </button>
                 )}
@@ -1215,12 +1348,13 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
 
         {/* ═══ CENTER — CHART + TABS ═══ */}
         <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minWidth:0}}>
-          <div style={{display:"flex",borderBottom:`1px solid ${C.border}`,background:C.bg,flexShrink:0}}>
+          <div style={{display:"flex",borderBottom:`1px solid ${C.border}`,background:"#0a0d13",flexShrink:0,borderTop:`2px solid #1f6feb18`}}>
             {[
               ["chart","Chart"],
               ["intelligence","Intelligence"],
               ["trapsense","TrapSense AI™"],
               ["news","News"],
+            ["sizing","Position Size"],
             ].map(([id,label]) => (
               <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)}>{label}</button>
             ))}
@@ -1241,7 +1375,7 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                 </div>
               )}
               {dna && !analyzing && (
-                <div style={{background:"#0d1117",borderBottom:`1px solid #161b22`,padding:"4px 14px",flexShrink:0,display:"flex",gap:14,alignItems:"center"}}>
+                <div style={{background:"#0f111a",borderBottom:`1px solid #1e2537`,padding:"5px 14px",flexShrink:0,display:"flex",gap:14,alignItems:"center",borderTop:"1px solid #1a1f2e"}}>
                   <span style={{fontSize:7,color:"#4a5568",letterSpacing:2,flexShrink:0}}>MARKET DNA™</span>
                   {[
                     {l:"BIAS",v:dna.marketBias>0?"BULL":"BEAR",c:dna.marketBias>0?C.green:C.red},
@@ -1370,7 +1504,26 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
                   </div>
                 );
               })()}
-
+{/* Multi-Timeframe Confluence */}
+              <div style={{background:dna.mtfConfluence?"rgba(0,212,168,0.05)":"rgba(255,214,0,0.04)",border:`1px solid ${dna.mtfConfluence?"#00d4a833":"#ffd60033"}`,borderRadius:5,padding:"9px 12px",display:"flex",gap:8,alignItems:"flex-start"}}>
+                <span style={{fontSize:10,flexShrink:0,marginTop:1}}>{dna.mtfConfluence?"⬡":"◈"}</span>
+                <div>
+                  <div style={{fontSize:8,color:dna.mtfConfluence?"#00d4a8":"#ffd600",fontWeight:700,letterSpacing:.8,marginBottom:2}}>
+                    {dna.mtfConfluence ? "MTF CONFLUENCE CONFIRMED" : "MTF DIVERGENCE DETECTED"}
+                  </div>
+                  <div style={{fontSize:9,color:"#6e7681",lineHeight:1.6}}>{dna.mtfNote}</div>
+                </div>
+              </div>
+              {/* Correlation warnings */}
+              {getCorrelationWarning(market.id, dna.signal).map((c,i) => (
+                <div key={i} style={{background:"rgba(179,136,255,0.04)",border:"1px solid #b388ff22",borderRadius:5,padding:"9px 12px",display:"flex",gap:8,alignItems:"flex-start"}}>
+                  <span style={{fontSize:9,color:"#b388ff",flexShrink:0}}>⟷</span>
+                  <div>
+                    <div style={{fontSize:8,color:"#b388ff",fontWeight:700,letterSpacing:.8,marginBottom:2}}>CORRELATION: {market.id} ↔ {c.peer} (r={c.r})</div>
+                    <div style={{fontSize:9,color:"#6e7681",lineHeight:1.6}}>{c.note}</div>
+                  </div>
+                </div>
+              ))}
               {/* Psychology Warning Banner */}
               {dna.psychWarning && (
                 <div style={{background:dna.psychWarning.level==="danger"?"rgba(255,71,87,0.07)":dna.psychWarning.level==="warn"?"rgba(255,214,0,0.06)":"rgba(31,111,235,0.06)",border:`1px solid ${dna.psychWarning.level==="danger"?C.red:dna.psychWarning.level==="warn"?C.amber:C.accent}44`,borderRadius:5,padding:"10px 12px",borderLeft:`3px solid ${dna.psychWarning.level==="danger"?C.red:dna.psychWarning.level==="warn"?C.amber:C.accent}`}}>
@@ -1615,7 +1768,12 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
               </div>
             </div>
           )}
-
+{/* ──── POSITION SIZING TAB ──── */}
+          {tab==="sizing" && dna && (
+            <div className="fadein" style={{flex:1,overflowY:"auto",padding:"16px 18px",display:"flex",flexDirection:"column",gap:12}}>
+              <PositionSizer market={market} livePrice={livePrice} dna={dna} />
+            </div>
+          )}
           {/* ──── NEWS TAB ──── */}
           {tab==="news" && (
             <div className="fadein" style={{flex:1,overflowY:"auto",padding:"12px 14px"}}>
@@ -1661,7 +1819,10 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
 
         {/* ═══ RIGHT PANEL — OVERVIEW ═══ */}
         <div style={{width:158,background:C.bg,borderLeft:`1px solid ${C.border}`,display:"flex",flexDirection:"column",flexShrink:0,overflow:"hidden"}}>
-          <div style={{padding:"5px 10px 4px",fontSize:7,color:"#4a5568",letterSpacing:3,borderBottom:`1px solid ${C.border}`,textTransform:"uppercase",fontWeight:700}}>Overview</div>
+          <div style={{padding:"6px 10px 5px",fontSize:7,color:"#4a5568",letterSpacing:3,borderBottom:`1px solid ${C.border}`,textTransform:"uppercase",fontWeight:700,display:"flex",alignItems:"center",justifyContent:"space-between",background:"#0a0d13"}}>
+            <span>Overview</span>
+            <div className="blink" style={{width:4,height:4,borderRadius:"50%",background:"#21262d"}}/>
+          </div>
           <div style={{flex:1,overflowY:"auto",padding:"5px"}}>
             {MARKETS.map((m,mi) => {
               const p = marketPrices[m.id]||m.base;
@@ -1682,22 +1843,28 @@ Tone: institutional, calm, precise, probabilistic. No guarantees. No hype.`;
 
           {dna && !analyzing && (
             <div style={{padding:"10px",borderTop:`1px solid ${C.border}`,flexShrink:0}}>
-              <div style={{fontSize:7,color:"#4a5568",letterSpacing:2,marginBottom:7}}>DNA SNAPSHOT</div>
+              <div style={{fontSize:7,color:"#4a5568",letterSpacing:2,marginBottom:6}}>DNA SNAPSHOT</div>
               {[
-                {l:"PulseScore™",v:`${dna.pulseScore}`,c:dna.pulseScore>=62?C.green:dna.pulseScore<=38?C.red:C.amber},
-                {l:"Danger™",v:`${dangerScore}`,c:dangerColor},
-                {l:"Trap™",v:`${dna.trapProb}%`,c:dna.trapProb>55?C.amber:C.muted},
-                {l:"Exit Radar™",v:`${dna.exitRisk}%`,c:dna.exitRisk>60?C.red:C.muted},
-                {l:"RSI",v:`${dna.lastRSI?.toFixed(0)}`,c:dna.lastRSI>70?C.red:dna.lastRSI<30?C.green:C.muted},
+                {l:"PulseScore™",v:dna.pulseScore,max:100,c:dna.pulseScore>=62?C.green:dna.pulseScore<=38?C.red:C.amber,fmt:`${dna.pulseScore}`},
+                {l:"Danger™",v:dangerScore,max:100,c:dangerColor,fmt:`${dangerScore}`},
+                {l:"Trap™",v:dna.trapProb,max:100,c:dna.trapProb>55?C.amber:C.muted,fmt:`${dna.trapProb}%`},
+                {l:"Exit Radar™",v:dna.exitRisk,max:100,c:dna.exitRisk>60?C.red:C.muted,fmt:`${dna.exitRisk}%`},
+                {l:"RSI",v:dna.lastRSI,max:100,c:dna.lastRSI>70?C.red:dna.lastRSI<30?C.green:C.muted,fmt:`${dna.lastRSI?.toFixed(0)}`},
               ].map((x,i) => (
-                <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"4px 0",borderBottom:i<4?`1px solid ${C.border}`:"none"}}>
-                  <span style={{fontSize:8,color:"#4a5568"}}>{x.l}</span>
-                  <span style={{fontSize:9,color:x.c,fontWeight:700}}>{x.v}</span>
+                <div key={i} style={{marginBottom:5}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:7,color:"#4a5568",marginBottom:2}}>
+                    <span>{x.l}</span>
+                    <span style={{color:x.c,fontWeight:700}}>{x.fmt}</span>
+                  </div>
+                  <div style={{height:3,background:"#161b22",borderRadius:2,overflow:"hidden"}}>
+                    <div style={{height:"100%",width:`${Math.min(100,x.v/x.max*100)}%`,background:x.c,borderRadius:2,transition:"width 1.2s ease"}}/>
+                  </div>
                 </div>
               ))}
-              <div style={{marginTop:8,padding:"6px 8px",background:dna.signalBg,border:`1px solid ${dna.signalColor}44`,borderRadius:4,textAlign:"center"}}>
-                <div style={{fontSize:10,fontWeight:900,color:dna.signalColor,letterSpacing:2}}>{dna.signal}</div>
-                <div style={{fontSize:7,color:dna.signalColor+"77",marginTop:2,letterSpacing:.5}}>AI SIGNAL · {market.id}</div>
+              <div style={{marginTop:8,padding:"8px",background:`linear-gradient(135deg,${dna.signalBg},#0d1117)`,border:`1px solid ${dna.signalColor}55`,borderRadius:5,textAlign:"center",position:"relative",overflow:"hidden"}}>
+                <div style={{position:"absolute",inset:0,backgroundImage:`repeating-linear-gradient(90deg,transparent,transparent 5px,${dna.signalColor}05 5px,${dna.signalColor}05 6px)`,pointerEvents:"none"}}/>
+                <div style={{fontSize:13,fontWeight:900,color:dna.signalColor,letterSpacing:3,position:"relative"}}>{dna.signal}</div>
+                <div style={{fontSize:7,color:dna.signalColor+"55",marginTop:2,letterSpacing:.8,position:"relative"}}>AI SIGNAL · {market.id}</div>
               </div>
             </div>
           )}
