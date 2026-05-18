@@ -1627,6 +1627,16 @@ function PulseTradeAIInner() {
   const paperWinRate   = paperHistory.length > 0 ? Math.round(paperWins / paperHistory.length * 100) : 0;
   const paperTotalReal = paperHistory.reduce((a, h) => a + (h.finalPnl || 0), 0);
 
+  /* ══ DANGER SCORE (Safe version) ══ */
+  const dangerScore = dna ? Math.round(
+    (dna.trapProb || 0) * 0.35 + 
+    (dna.exitRisk || 0) * 0.35 + 
+    (dna.reversalProb || 0) * 0.20 + 
+    (100 - (dna.trendStrength || 50)) * 0.10
+  ) : 30;
+
+  const dangerColor = dangerScore > 65 ? "#ff4757" : dangerScore > 45 ? "#ffd600" : "#00d4a8";
+
   /* ══ AI CHAT ASSISTANT (Local Only) ══ */
   const [chatMessages, setChatMessages] = useState([{
     role: "assistant",
