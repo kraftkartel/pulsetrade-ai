@@ -1512,6 +1512,91 @@ function PulseTradeAIInner() {
   const [commentary,   setCommentary]   = useState(null);
   const [preLoss,      setPreLoss]      = useState({ level: 0, warnings: [], score: 0 });
   const [mtfPred,      setMtfPred]      = useState(null);
+
+  /* ══ PAPER TRADING ENGINE ══ */
+  const [paperBalance,   setPaperBalance]   = useState(() => lsGet("paper_balance", 10000));
+  const [paperPositions, setPaperPositions] = useState(() => lsGet("paper_positions", []));
+  const [paperHistory,   setPaperHistory]   = useState(() => lsGet("paper_history", []));
+  const [paperMode,      setPaperMode]      = useState(() => lsGet("paper_mode", false));
+  const [paperNotif,     setPaperNotif]     = useState(null);
+
+  useEffect(() => { lsSet("paper_balance",   paperBalance);   }, [paperBalance]);
+  useEffect(() => { lsSet("paper_positions", paperPositions); }, [paperPositions]);
+  useEffect(() => { lsSet("paper_history",   paperHistory);   }, [paperHistory]);
+  useEffect(() => { lsSet("paper_mode",      paperMode);      }, [paperMode]);
+
+  // Live P&L update on every price tick
+  useEffect(() => {
+    if (!paperPositions.length) return;
+    setPaperPositions(prev => prev.map(pos => ({
+      ...pos,
+      currentPrice: livePrice,
+      unrealizedPnl: pos.side === "BUY"
+        ? (livePrice - pos.entryPrice) * pos.units
+        : (pos.entryPrice - livePrice) * pos.units,
+    })));
+  }, [livePrice]);
+
+  const paperTrade = useCallback((side) => {
+    if (!dna || !livePrice) return;
+    const riskPct = 0.02;
+    const riskAmount = paperBalance * riskPct;
+    const rawStop = parseFloat((dna.stop || "-1%").replace(/[+\-%]/g, "")) / 100;
+    const stopPct  = Math.max(rawStop, 0.005);
+    const stopDist = livePrice * stopPct;
+    const units    = parseFloat((riskAmount / stopDist).toFixed(6));
+    const cost     = units * livePrice;
+    if (cost > paperBalance) {
+      setPaperNotif({ type: "error", msg: "Insufficient paper balance for this trade." });
+      setTimeout(() => setPaperNotif(null), 3000);
+      return;
+    }
+    const pos = {
+      id: Date.now(), market: market.id, side,
+      entryPrice: livePrice, currentPrice: livePrice,
+      units, cost, unrealizedPnl: 0,
+      stopLoss:   side === "BUY"  ? livePrice * (1 - stopPct) : livePrice * (1 + stopPct),
+      target:     side === "BUY"  ? livePrice * (1 + stopPct * 1.8) : livePrice * (1 - stopPct * 1.8),
+      openedAt: new Date().toLocaleTimeString(),
+      pulseScore: dna.pulseScore,
+    };
+    setPaperBalance(prev => prev - cost);
+    setPaperPositions(prev => [...prev, pos]);
+    setPaperNotif({ type: "success", msg: `Paper ${side} · ${units.toFixed(4)} ${market.id} @ ${fmt(livePrice, market)}` });
+    setTimeout(() => setPaperNotif(null), 3500);
+  }, [dna, livePrice, market, paperBalance]);
+
+  const closePaperPosition = useCallback((posId) => {
+    setPaperPositions(prev => {
+      const pos = prev.find(p => p.id === posId);
+      if (!pos) return prev;
+      const finalPnl = pos.side === "BUY"
+        ? (livePrice - pos.entryPrice) * pos.units
+        : (pos.entryPrice - livePrice) * pos.units;
+      setPaperBalance(b => b + pos.cost + finalPnl);
+      setPaperHistory(h => [{
+        ...pos, closedAt: new Date().toLocaleTimeString(),
+        closePrice: livePrice, finalPnl,
+        result: finalPnl >= 0 ? "WIN" : "LOSS",
+      }, ...h.slice(0, 19)]);
+      setPaperNotif({ type: finalPnl >= 0 ? "success" : "error", msg: `Closed · P&L: ${finalPnl >= 0 ? "+" : ""}$${finalPnl.toFixed(2)}` });
+      setTimeout(() => setPaperNotif(null), 3500);
+      return prev.filter(p => p.id !== posId);
+    });
+  }, [livePrice]);
+
+  const resetPaperAccount = () => {
+    setPaperBalance(10000); setPaperPositions([]); setPaperHistory([]);
+    setPaperNotif({ type: "success", msg: "Paper account reset to $10,000" });
+    setTimeout(() => setPaperNotif(null), 2500);
+  };
+
+  const paperTotalPnl  = paperPositions.reduce((a, p) => a + (p.unrealizedPnl || 0), 0);
+  const paperEquity    = paperBalance + paperPositions.reduce((a, p) => a + p.cost + (p.unrealizedPnl || 0), 0);
+  const paperWins      = paperHistory.filter(h => h.result === "WIN").length;
+  const paperWinRate   = paperHistory.length > 0 ? Math.round(paperWins / paperHistory.length * 100) : 0;
+  const paperTotalReal = paperHistory.reduce((a, h) => a + (h.finalPnl || 0), 0);
+
   const recentTradesRef = useRef([]);
   const commentaryTimerRef = useRef(null);
 
@@ -1902,6 +1987,14 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               <div style={{fontSize:16,fontWeight:700,color:dna.pulseScore>=62?C.green:dna.pulseScore<=38?C.red:C.amber,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{dna.pulseScore}<span style={{fontSize:9,color:"#4a5568"}}>/100</span></div>
             </div>
           )}
+          {paperMode && (
+            <div style={{display:"flex",alignItems:"center",gap:5,background:"rgba(0,212,168,0.08)",border:"1px solid #00d4a833",borderRadius:4,padding:"2px 10px",cursor:"pointer"}} onClick={()=>setTab("paper")}>
+              <div className="blink" style={{width:5,height:5,borderRadius:"50%",background:"#00d4a8"}}/>
+              <span style={{fontSize:7,color:"#00d4a8",letterSpacing:1,fontWeight:700}}>PAPER</span>
+              <span style={{fontSize:9,color:paperEquity>=10000?"#00d4a8":"#ff4757",fontWeight:700}}>${paperEquity.toFixed(0)}</span>
+              {paperTotalPnl !== 0 && <span style={{fontSize:8,color:paperTotalPnl>=0?"#00d4a8":"#ff4757"}}>{paperTotalPnl>=0?"+":""}${paperTotalPnl.toFixed(0)}</span>}
+            </div>
+          )}
           <SoundToggle />
           <div style={{display:"flex",alignItems:"center",gap:5}}>
             <div style={{position:"relative",width:8,height:8}}>
@@ -2082,6 +2175,7 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               ["trapsense","TrapSense AI™"],
               ["news","News"],
               ["sizing","Position Size"],
+              ["paper","📄 Paper Trade"],
             ].map(([id,label]) => (
               <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)} style={{
                 whiteSpace:"nowrap",
@@ -2968,6 +3062,156 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               <PositionSizer market={market} livePrice={livePrice} dna={dna} />
             </div>
           )}
+          {/* ──── PAPER TRADING TAB ──── */}
+          {tab==="paper" && (
+            <div className="fadein" style={{flex:1,overflowY:"auto",padding:"14px 16px",display:"flex",flexDirection:"column",gap:12}}>
+
+              {/* Header row */}
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                <div>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
+                    <span style={{fontSize:12,color:"#e6edf3",fontWeight:700}}>📄 Paper Trading</span>
+                    <div onClick={()=>setPaperMode(v=>!v)} style={{cursor:"pointer",padding:"3px 10px",borderRadius:12,background:paperMode?"rgba(0,212,168,0.12)":"rgba(255,255,255,0.04)",border:`1px solid ${paperMode?"#00d4a8":"#30363d"}`,fontSize:8,color:paperMode?"#00d4a8":"#4a5568",fontWeight:700,letterSpacing:1,userSelect:"none",transition:"all .2s"}}>
+                      {paperMode ? "● PAPER ON" : "○ PAPER OFF"}
+                    </div>
+                  </div>
+                  <div style={{fontSize:8,color:"#4a5568"}}>Simulate trades with virtual $10,000 — zero real money risk</div>
+                </div>
+                <button onClick={resetPaperAccount} style={{fontSize:8,color:"#4a5568",background:"transparent",border:"1px solid #21262d",borderRadius:4,padding:"5px 12px",cursor:"pointer",fontFamily:"inherit",letterSpacing:.8,transition:"all .15s"}}>↺ RESET</button>
+              </div>
+
+              {/* Notification toast */}
+              {paperNotif && (
+                <div className="fadein" style={{padding:"9px 14px",borderRadius:5,background:paperNotif.type==="success"?"rgba(0,212,168,0.1)":"rgba(255,71,87,0.1)",border:`1px solid ${paperNotif.type==="success"?"#00d4a844":"#ff475744"}`,fontSize:9,color:paperNotif.type==="success"?"#00d4a8":"#ff4757",fontWeight:600,display:"flex",alignItems:"center",gap:7}}>
+                  <span>{paperNotif.type==="success"?"✓":"⚠"}</span>{paperNotif.msg}
+                </div>
+              )}
+
+              {/* Account overview cards */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8}}>
+                {[
+                  {l:"CASH",          v:`$${paperBalance.toFixed(2)}`,       c:"#c9d1d9"},
+                  {l:"EQUITY",        v:`$${paperEquity.toFixed(2)}`,         c:paperEquity>=10000?"#00d4a8":"#ff4757"},
+                  {l:"OPEN P&L",      v:`${paperTotalPnl>=0?"+":""}$${paperTotalPnl.toFixed(2)}`, c:paperTotalPnl>=0?"#00d4a8":"#ff4757"},
+                  {l:"WIN RATE",      v:`${paperWinRate}%`,                   c:paperWinRate>=55?"#00d4a8":paperWinRate>=40?"#ffd600":"#ff4757"},
+                ].map((x,i)=>(
+                  <div key={i} style={{background:"#161b22",border:"1px solid #21262d",borderRadius:5,padding:"10px 10px",textAlign:"center"}}>
+                    <div style={{fontSize:6,color:"#4a5568",letterSpacing:1.5,marginBottom:4}}>{x.l}</div>
+                    <div style={{fontSize:12,color:x.c,fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>{x.v}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Equity curve mini-bar */}
+              <div style={{background:"#161b22",border:"1px solid #21262d",borderRadius:5,padding:"10px 12px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:7,color:"#4a5568",marginBottom:6}}>
+                  <span style={{letterSpacing:1.5}}>ACCOUNT GROWTH</span>
+                  <span style={{color:paperEquity>=10000?"#00d4a8":"#ff4757",fontWeight:700}}>{paperEquity>=10000?"+":""}${(paperEquity-10000).toFixed(2)} from start</span>
+                </div>
+                <div style={{height:6,background:"#0d1117",borderRadius:3,overflow:"hidden"}}>
+                  <div style={{height:"100%",borderRadius:3,transition:"width 1s ease",background:paperEquity>=10000?"linear-gradient(90deg,#00d4a8,#00b4d8)":"linear-gradient(90deg,#ff4757,#ff6b6b)",width:`${Math.min(100,Math.max(2,(paperEquity/10000)*50))}%`}}/>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:7,color:"#21262d",marginTop:4}}>
+                  <span>$0</span><span>$10,000 start</span><span>$20,000</span>
+                </div>
+              </div>
+
+              {/* One-click trade execution */}
+              {dna ? (
+                <div style={{background:"#0d1117",border:`2px solid ${dna.signalColor}33`,borderRadius:6,padding:"14px",position:"relative",overflow:"hidden"}}>
+                  <div style={{position:"absolute",inset:0,backgroundImage:`repeating-linear-gradient(45deg,transparent,transparent 12px,${dna.signalColor}03 12px,${dna.signalColor}03 13px)`,pointerEvents:"none"}}/>
+                  <div style={{fontSize:7,color:"#4a5568",letterSpacing:2,marginBottom:10,position:"relative"}}>QUICK EXECUTE · {market.id} · {fmt(livePrice, market)}</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10,position:"relative"}}>
+                    <button onClick={()=>paperTrade("BUY")} style={{padding:"14px",borderRadius:5,background:"rgba(0,212,168,0.1)",border:"2px solid #00d4a8",color:"#00d4a8",fontWeight:900,fontSize:13,letterSpacing:2,cursor:"pointer",fontFamily:"inherit",transition:"all .2s",position:"relative",overflow:"hidden"}}>
+                      ▲ LONG
+                    </button>
+                    <button onClick={()=>paperTrade("SELL")} style={{padding:"14px",borderRadius:5,background:"rgba(255,71,87,0.1)",border:"2px solid #ff4757",color:"#ff4757",fontWeight:900,fontSize:13,letterSpacing:2,cursor:"pointer",fontFamily:"inherit",transition:"all .2s"}}>
+                      ▼ SHORT
+                    </button>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,position:"relative"}}>
+                    {[
+                      {l:"RISK / TRADE", v:"2% of balance",  c:"#ff4757"},
+                      {l:"STOP LOSS",    v:dna.stop,          c:"#ffd600"},
+                      {l:"R/R RATIO",    v:dna.rr,            c:"#00d4a8"},
+                    ].map((x,i)=>(
+                      <div key={i} style={{background:"#161b22",borderRadius:4,padding:"6px 8px",textAlign:"center",border:"1px solid #21262d"}}>
+                        <div style={{fontSize:6,color:"#4a5568",letterSpacing:1,marginBottom:3}}>{x.l}</div>
+                        <div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.v}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div style={{background:"#161b22",border:"1px solid #21262d",borderRadius:5,padding:"20px",textAlign:"center",fontSize:9,color:"#4a5568"}}>Loading market data…</div>
+              )}
+
+              {/* Open positions */}
+              <div style={{background:"#161b22",border:"1px solid #21262d",borderRadius:6,padding:"12px 14px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:paperPositions.length?10:0}}>
+                  <div style={{fontSize:7,color:"#4a5568",letterSpacing:2}}>OPEN POSITIONS</div>
+                  <div style={{fontSize:8,color:paperTotalPnl>=0?"#00d4a8":"#ff4757",fontWeight:700}}>{paperPositions.length} active · {paperTotalPnl>=0?"+":""}${paperTotalPnl.toFixed(2)}</div>
+                </div>
+                {paperPositions.length === 0 ? (
+                  <div style={{fontSize:9,color:"#30363d",textAlign:"center",padding:"18px 0",fontStyle:"italic"}}>No open positions. Take a paper trade above to get started.</div>
+                ) : paperPositions.map((pos,i) => (
+                  <div key={pos.id} style={{background:"#0d1117",border:`1px solid ${pos.unrealizedPnl>=0?"#00d4a833":"#ff475733"}`,borderRadius:5,padding:"10px 12px",marginBottom:i<paperPositions.length-1?8:0,borderLeft:`3px solid ${pos.unrealizedPnl>=0?"#00d4a8":"#ff4757"}`}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:10,fontWeight:900,color:pos.side==="BUY"?"#00d4a8":"#ff4757"}}>{pos.side==="BUY"?"▲":"▼"} {pos.side}</span>
+                        <span style={{fontSize:8,color:"#4a5568"}}>{pos.market}</span>
+                        <span style={{fontSize:7,color:"#30363d",background:"#161b22",padding:"1px 5px",borderRadius:2}}>{pos.openedAt}</span>
+                      </div>
+                      <button onClick={()=>closePaperPosition(pos.id)} style={{fontSize:8,color:"#ff4757",background:"rgba(255,71,87,0.1)",border:"1px solid #ff475544",borderRadius:3,padding:"4px 10px",cursor:"pointer",fontFamily:"inherit",fontWeight:700,letterSpacing:.8}}>CLOSE</button>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr",gap:5}}>
+                      {[
+                        {l:"UNITS",    v:pos.units.toFixed(4)},
+                        {l:"ENTRY",    v:fmt(pos.entryPrice, market)},
+                        {l:"CURRENT",  v:fmt(pos.currentPrice||pos.entryPrice, market)},
+                        {l:"STOP",     v:fmt(pos.stopLoss, market)},
+                        {l:"P&L",      v:`${(pos.unrealizedPnl||0)>=0?"+":""}$${(pos.unrealizedPnl||0).toFixed(2)}`, c:pos.unrealizedPnl>=0?"#00d4a8":"#ff4757"},
+                      ].map((x,i)=>(
+                        <div key={i}>
+                          <div style={{fontSize:6,color:"#4a5568",letterSpacing:1,marginBottom:2}}>{x.l}</div>
+                          <div style={{fontSize:9,color:x.c||"#c9d1d9",fontWeight:700}}>{x.v}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {Math.abs((pos.currentPrice||pos.entryPrice) - pos.stopLoss) / pos.stopLoss < 0.003 && (
+                      <div className="fadein" style={{marginTop:7,padding:"4px 8px",background:"rgba(255,71,87,0.1)",borderRadius:3,fontSize:8,color:"#ff4757",fontWeight:700}}>
+                        ⚠ Approaching stop loss — price within 0.3%
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Closed trade history */}
+              {paperHistory.length > 0 && (
+                <div style={{background:"#161b22",border:"1px solid #21262d",borderRadius:6,padding:"12px 14px"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                    <div style={{fontSize:7,color:"#4a5568",letterSpacing:2}}>TRADE HISTORY</div>
+                    <div style={{display:"flex",gap:10,fontSize:8}}>
+                      <span style={{color:"#00d4a8"}}>{paperWins}W</span>
+                      <span style={{color:"#ff4757"}}>{paperHistory.length-paperWins}L</span>
+                      <span style={{color:paperTotalReal>=0?"#00d4a8":"#ff4757",fontWeight:700}}>{paperTotalReal>=0?"+":""}${paperTotalReal.toFixed(2)} total</span>
+                    </div>
+                  </div>
+                  {paperHistory.slice(0, 10).map((h, i) => (
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"6px 0",borderBottom:i<Math.min(9,paperHistory.length-1)?"1px solid #0d1117":"none"}}>
+                      <span style={{fontSize:8,padding:"2px 6px",borderRadius:3,background:h.result==="WIN"?"rgba(0,212,168,0.12)":"rgba(255,71,87,0.12)",color:h.result==="WIN"?"#00d4a8":"#ff4757",fontWeight:700,flexShrink:0,minWidth:32,textAlign:"center"}}>{h.result}</span>
+                      <span style={{fontSize:8,color:h.side==="BUY"?"#00d4a888":"#ff475788",flexShrink:0}}>{h.side==="BUY"?"▲":"▼"}</span>
+                      <span style={{fontSize:8,color:"#4a5568",flexShrink:0}}>{h.market}</span>
+                      <span style={{fontSize:7,color:"#21262d"}}>{h.openedAt}→{h.closedAt}</span>
+                      <span style={{fontSize:9,color:h.finalPnl>=0?"#00d4a8":"#ff4757",fontWeight:700,marginLeft:"auto",flexShrink:0}}>{h.finalPnl>=0?"+":""}${h.finalPnl.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ──── NEWS TAB ──── */}
           {tab==="news" && (
             <div className="fadein" style={{flex:1,overflowY:"auto",padding:"12px 14px"}}>
