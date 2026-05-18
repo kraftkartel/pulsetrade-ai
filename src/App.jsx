@@ -1987,14 +1987,6 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               <div style={{fontSize:16,fontWeight:700,color:dna.pulseScore>=62?C.green:dna.pulseScore<=38?C.red:C.amber,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{dna.pulseScore}<span style={{fontSize:9,color:"#4a5568"}}>/100</span></div>
             </div>
           )}
-          {paperMode && (
-            <div style={{display:"flex",alignItems:"center",gap:5,background:"rgba(0,212,168,0.08)",border:"1px solid #00d4a833",borderRadius:4,padding:"2px 10px",cursor:"pointer"}} onClick={()=>setTab("paper")}>
-              <div className="blink" style={{width:5,height:5,borderRadius:"50%",background:"#00d4a8"}}/>
-              <span style={{fontSize:7,color:"#00d4a8",letterSpacing:1,fontWeight:700}}>PAPER</span>
-              <span style={{fontSize:9,color:paperEquity>=10000?"#00d4a8":"#ff4757",fontWeight:700}}>${paperEquity.toFixed(0)}</span>
-              {paperTotalPnl !== 0 && <span style={{fontSize:8,color:paperTotalPnl>=0?"#00d4a8":"#ff4757"}}>{paperTotalPnl>=0?"+":""}${paperTotalPnl.toFixed(0)}</span>}
-            </div>
-          )}
           <SoundToggle />
           <div style={{display:"flex",alignItems:"center",gap:5}}>
             <div style={{position:"relative",width:8,height:8}}>
