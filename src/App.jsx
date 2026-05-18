@@ -1597,6 +1597,74 @@ function PulseTradeAIInner() {
   const paperWinRate   = paperHistory.length > 0 ? Math.round(paperWins / paperHistory.length * 100) : 0;
   const paperTotalReal = paperHistory.reduce((a, h) => a + (h.finalPnl || 0), 0);
 
+  /* ══ AI CHAT ASSISTANT (Local Only) ══ */
+  const [chatMessages, setChatMessages] = useState([{
+    role: "assistant",
+    text: `👋 I'm your PulseTrade AI Copilot. Ask me anything about the current market, regime, risk, or setup. I work 100% locally.`,
+    ts: new Date().toLocaleTimeString(),
+  }]);
+  const [chatInput,   setChatInput]   = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = useRef(null);
+
+  useEffect(() => { 
+    chatEndRef.current?.scrollIntoView({ behavior:"smooth" }); 
+  }, [chatMessages]);
+
+  const QUICK_PROMPTS = [
+    "Explain the current regime",
+    "What's the risk on this setup?",
+    "Is this a trap or real breakout?",
+    "Simulate exit scenarios",
+    "What is smart money doing?",
+    "Should I enter or wait?",
+  ];
+
+  const sendChatMessage = (text) => {
+    if (!text?.trim() || chatLoading) return;
+
+    setChatMessages(prev => [...prev, { role:"user", text, ts: new Date().toLocaleTimeString() }]);
+    setChatInput("");
+    setChatLoading(true);
+
+    // Simulate thinking delay
+    setTimeout(() => {
+      const q = text.toLowerCase();
+      let reply = "";
+
+      if (q.includes("regime") || q.includes("condition") || q.includes("trend")) {
+        reply = `Current regime is ${regime?.regime?.replace(/_/g," ") || "neutral"} with ${regime?.confidence || 0}% confidence. ${regime?.hint || ""} PulseScore is at ${dna?.pulseScore || "-"}/100.`;
+      } 
+      else if (q.includes("risk") || q.includes("danger") || q.includes("safe")) {
+        reply = `Danger level is around ${Math.round(dna?.trapProb * 0.4 + dna?.exitRisk * 0.4 + (100 - dna?.trendStrength) * 0.2)}/100. TrapSense at ${dna?.trapProb || 0}%, Exit Risk at ${dna?.exitRisk || 0}%.`;
+      } 
+      else if (q.includes("trap") || q.includes("fake") || q.includes("breakout")) {
+        reply = `TrapSense is reading ${dna?.trapProb || 0}%. ${dna?.trapProb > 55 ? "High chance of false move — be careful." : "No strong trap signals detected."} MTF confluence is ${dna?.mtfConfluence ? "strong" : "weak"}.`;
+      } 
+      else if (q.includes("exit") || q.includes("close") || q.includes("sell")) {
+        reply = `Smart Exit Radar shows ${dna?.exitRisk || 0}% risk. Target is ${dna?.target}, Stop at ${dna?.stop}. Consider trailing if in profit.`;
+      } 
+      else if (q.includes("whale") || q.includes("smart money")) {
+        reply = `Smart money bias is ${dna?.smBias > 20 ? "bullish (accumulation)" : dna?.smBias < -20 ? "bearish (distribution)" : "neutral"}.`;
+      } 
+      else if (q.includes("enter") || q.includes("buy") || q.includes("long")) {
+        reply = dna?.signal === "BUY" 
+          ? `Buy signal active with ${dna?.confidence || 0}% confidence. PulseScore ${dna?.pulseScore}/100 looks decent.` 
+          : `No strong buy signal right now. Better to wait for confirmation.`;
+      } 
+      else {
+        reply = `${market.id} is currently showing a ${dna?.signal || "WAIT"} signal at ${dna?.confidence || 0}% confidence. PulseScore: ${dna?.pulseScore}/100 | Regime: ${regime?.regime?.replace(/_/g," ") || "neutral"}`;
+      }
+
+      setChatMessages(prev => [...prev, { 
+        role: "assistant", 
+        text: reply, 
+        ts: new Date().toLocaleTimeString() 
+      }]);
+      setChatLoading(false);
+    }, 420);
+  };
+
   const recentTradesRef = useRef([]);
   const commentaryTimerRef = useRef(null);
 
@@ -2176,6 +2244,7 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               ["news","News"],
               ["sizing","Position Size"],
               ["paper","📄 Paper Trade"],
+              ["chat","🤖 AI Chat"],
             ].map(([id,label]) => (
               <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)} style={{
                 whiteSpace:"nowrap",
@@ -3056,7 +3125,70 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               </div>
             </div>
           )}
-{/* ──── POSITION SIZING TAB ──── */}
+{/* ─          {/* ──── AI CHAT ASSISTANT TAB ──── */}
+          {tab==="chat" && (
+            <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",background:"#0a0d13"}}>
+              {/* Chat header */}
+              <div style={{padding:"8px 14px",borderBottom:"1px solid #161b22",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:7}}>
+                  <div className="blink" style={{width:6,height:6,borderRadius:"50%",background:"#1f6feb"}}/>
+                  <span style={{fontSize:9,color:"#1f6feb",fontWeight:700,letterSpacing:1}}>AI COPILOT · LOCAL</span>
+                </div>
+                <div style={{fontSize:7,color:"#30363d",letterSpacing:1}}>{mode.toUpperCase()} MODE</div>
+              </div>
+
+              {/* Messages Area */}
+              <div style={{flex:1,overflowY:"auto",padding:"12px 14px",display:"flex",flexDirection:"column",gap:10}}>
+                {chatMessages.map((msg,i)=>(
+                  <div key={i} className="fadein" style={{display:"flex",gap:8,alignItems:"flex-start",flexDirection:msg.role==="user"?"row-reverse":"row"}}>
+                    <div style={{width:26,height:26,borderRadius:5,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,background:msg.role==="user"?"#1f6feb18":"#161b22",border:`1px solid ${msg.role==="user"?"#1f6feb33":"#21262d"}`,marginTop:1}}>
+                      {msg.role==="user"?"👤":"🤖"}
+                    </div>
+                    <div style={{maxWidth:"80%"}}>
+                      <div style={{background:msg.role==="user"?"rgba(31,111,235,0.1)":"#161b22",border:`1px solid ${msg.role==="user"?"#1f6feb33":"#21262d"}`,borderRadius:msg.role==="user"?"8px 8px 2px 8px":"8px 8px 8px 2px",padding:"9px 12px",marginBottom:3}}>
+                        <div style={{fontSize:9,color:"#c9d1d9",lineHeight:1.65,whiteSpace:"pre-wrap"}}>{msg.text}</div>
+                      </div>
+                      <div style={{fontSize:6,color:"#21262d",textAlign:msg.role==="user"?"right":"left"}}>{msg.ts}</div>
+                    </div>
+                  </div>
+                ))}
+                {chatLoading && (
+                  <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                    <div style={{width:26,height:26,borderRadius:5,background:"#161b22",border:"1px solid #21262d",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11}}>🤖</div>
+                    <div style={{background:"#161b22",border:"1px solid #21262d",borderRadius:6,padding:"8px 12px",fontSize:9,color:"#4a5568"}}>Thinking...</div>
+                  </div>
+                )}
+                <div ref={chatEndRef}/>
+              </div>
+
+              {/* Quick Prompts */}
+              <div style={{padding:"8px 12px 6px",borderTop:"1px solid #161b22",display:"flex",gap:5,flexWrap:"wrap",flexShrink:0}}>
+                {QUICK_PROMPTS.map((p,i)=>(
+                  <button key={i} onClick={()=>sendChatMessage(p)} disabled={chatLoading}
+                    style={{fontSize:8,color:"#4a5568",background:"transparent",border:"1px solid #21262d",borderRadius:12,padding:"4px 10px",cursor:"pointer"}}>
+                    {p}
+                  </button>
+                ))}
+              </div>
+
+              {/* Input Bar */}
+              <div style={{padding:"10px 12px",borderTop:"1px solid #21262d",display:"flex",gap:8,alignItems:"center",background:"#0d1117",flexShrink:0}}>
+                <input
+                  value={chatInput}
+                  onChange={e=>setChatInput(e.target.value)}
+                  onKeyDown={e=>{if(e.key==="Enter" && !e.shiftKey){e.preventDefault(); sendChatMessage(chatInput);}}}
+                  placeholder={`Ask about ${market.id}...`}
+                  style={{flex:1,background:"#161b22",border:"1px solid #21262d",borderRadius:5,padding:"9px 12px",color:"#c9d1d9",fontSize:10,outline:"none"}}
+                />
+                <button onClick={()=>sendChatMessage(chatInput)} disabled={!chatInput.trim()} 
+                  style={{width:38,height:38,borderRadius:5,background:chatInput.trim()?"#1f6feb":"#21262d",color:"#fff",border:"none",cursor:chatInput.trim()?"pointer":"not-allowed"}}>
+                  ↑
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ──── POSITION SIZING TAB ──── */}
           {tab==="sizing" && dna && (
             <div className="fadein" style={{flex:1,overflowY:"auto",padding:"16px 18px",display:"flex",flexDirection:"column",gap:12}}>
               <PositionSizer market={market} livePrice={livePrice} dna={dna} />
