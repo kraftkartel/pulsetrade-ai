@@ -2167,7 +2167,6 @@ Write exactly 5 lines. No markdown, no asterisks, no preamble. Each line starts 
               ["trapsense","TrapSense AI™"],
               ["news","News"],
               ["sizing","Position Size"],
-              ["paper","📄 Paper Trade"],
             ].map(([id,label]) => (
               <button key={id} className={`tab ${tab===id?"active":""}`} onClick={()=>setTab(id)} style={{
                 whiteSpace:"nowrap",
