@@ -1039,7 +1039,37 @@ function PositionSizer({ market, livePrice, dna }) {
       </div>
     </div>
   );
-}const soundEnabledRef = { current: false };
+}/* ══════════════════════════════════════════════════
+   ALERT ENGINE — Multi-channel alert system
+══════════════════════════════════════════════════ */
+const ALERT_RULES_DEFAULT = [
+  { id:"sig_change",  label:"Signal Changed (BUY/SELL/WAIT)", enabled:true,  sound:true,  browser:true  },
+  { id:"trap_high",   label:"TrapSense > 70%",                 enabled:true,  sound:true,  browser:false },
+  { id:"exit_high",   label:"Exit Risk > 70%",                 enabled:true,  sound:false, browser:true  },
+  { id:"danger_high", label:"Danger Score > 65",               enabled:false, sound:false, browser:false },
+  { id:"whale",       label:"Whale Trade Detected",            enabled:true,  sound:true,  browser:false },
+  { id:"pulse_drop",  label:"PulseScore drops > 15 points",    enabled:false, sound:false, browser:false },
+];
+
+function AlertToast({ alerts, onDismiss }) {
+  if (!alerts.length) return null;
+  return (
+    <div style={{position:"fixed",bottom:28,right:18,zIndex:9999,display:"flex",flexDirection:"column-reverse",gap:7,maxWidth:320,pointerEvents:"none"}}>
+      {alerts.map(a => (
+        <div key={a.id} className="fadein" style={{background:a.level==="critical"?"rgba(255,71,87,0.97)":a.level==="warning"?"rgba(255,214,0,0.97)":"rgba(0,212,168,0.97)",borderRadius:7,padding:"10px 14px",display:"flex",gap:10,alignItems:"center",boxShadow:"0 4px 24px rgba(0,0,0,0.6)",pointerEvents:"all",border:`1px solid ${a.level==="critical"?"#ff000044":a.level==="warning"?"#ffff0022":"#00ff8833"}`}}>
+          <span style={{fontSize:16,flexShrink:0}}>{a.icon}</span>
+          <div style={{flex:1}}>
+            <div style={{fontSize:9,fontWeight:900,color:"#0d1117",letterSpacing:.8,marginBottom:2}}>{a.title}</div>
+            <div style={{fontSize:8,color:"rgba(0,0,0,0.7)",lineHeight:1.4}}>{a.body}</div>
+          </div>
+          <button onClick={()=>onDismiss(a.id)} style={{background:"rgba(0,0,0,0.15)",border:"none",borderRadius:3,color:"#0d111799",fontSize:12,width:20,height:20,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,pointerEvents:"all"}}>×</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const soundEnabledRef = { current: false };
 function SoundToggle() {
   const [on, setOn] = useState(false);
   const toggle = () => { const n = !on; setOn(n); soundEnabledRef.current = n; };
